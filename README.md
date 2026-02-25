@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Scheduler Project
 
 This is a minimal Flet-based scheduler UI for Temperature and Gas scheduling.
@@ -32,3 +33,6 @@ python main.py
 Notes:
 - Requires `flet` package. The UI is intentionally minimal and focuses on the scheduling elements requested.
 - You can expand the gas scheduling and connect the scheduler to real devices or simulators.
+=======
+# smart_gas_system
+>>>>>>> a37a3e7e2e547cc35f9731ed26056c634bc6ee7c
