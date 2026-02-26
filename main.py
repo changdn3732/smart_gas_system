@@ -244,7 +244,6 @@ class SchedulerApp:
             ]), expand=5, padding=12),
         ], expand=True)
 
-        page.overlay.append(self._numpad_dialog)
         page.add(layout)
 
     def _build_schedule_panel(self):
@@ -313,23 +312,24 @@ class SchedulerApp:
             content = ft.Text(content, size=11,
                               weight=ft.FontWeight.BOLD if header else None,
                               text_align=ft.TextAlign.CENTER)
-        if isinstance(content, ft.TextField):
-            field_ref = content
-            content = ft.GestureDetector(
-                content=content,
-                on_tap_down=lambda e, f=field_ref: self._show_numpad(f),
-            )
         return ft.Container(content=content, width=w, height=h,
                             bgcolor=bg, border=border,
                             alignment=ft.Alignment(0, 0), padding=0)
 
     def _make_table_input(self, value="0.0", w=80, h=34, on_change=None):
-        tf = ft.TextField(value=value, width=w - 6, height=h - 4,
-                          text_size=12, text_align=ft.TextAlign.CENTER,
-                          content_padding=ft.padding.symmetric(horizontal=2, vertical=2),
-                          border_color="transparent", on_change=on_change,
-                          read_only=True)
-        return tf
+        display = ft.Text(value, size=12, text_align=ft.TextAlign.CENTER)
+        cell = ft.Container(
+            content=display,
+            width=w, height=h,
+            alignment=ft.Alignment(0, 0),
+            bgcolor="#ffffff",
+            border_radius=2,
+            on_click=lambda e: self._show_numpad(cell),
+        )
+        cell.value = value
+        cell.on_change = on_change
+        cell._display = display
+        return cell
 
     # ─── Numeric Keypad (touch panel) ───
 
@@ -395,8 +395,11 @@ class SchedulerApp:
         self._numpad_target = target_field
         self._numpad_value = target_field.value or ""
         self._numpad_display.value = self._numpad_value or "0"
-        self._numpad_dialog.open = True
-        self.page.update()
+        try:
+            self.page.open(self._numpad_dialog)
+        except Exception:
+            self._numpad_dialog.open = True
+            self.page.update()
 
     def _numpad_key(self, key):
         if key == "\u232b":
@@ -422,19 +425,28 @@ class SchedulerApp:
 
     def _numpad_confirm(self):
         if self._numpad_target:
-            self._numpad_target.value = self._numpad_value or "0"
-            if self._numpad_target.on_change:
+            val = self._numpad_value or "0"
+            self._numpad_target.value = val
+            if hasattr(self._numpad_target, '_display'):
+                self._numpad_target._display.value = val
+            if hasattr(self._numpad_target, 'on_change') and self._numpad_target.on_change:
                 try:
                     self._numpad_target.on_change(None)
                 except Exception:
                     pass
         self._numpad_open = False
-        self._numpad_dialog.open = False
+        try:
+            self.page.close(self._numpad_dialog)
+        except Exception:
+            self._numpad_dialog.open = False
         self.page.update()
 
     def _numpad_cancel(self):
         self._numpad_open = False
-        self._numpad_dialog.open = False
+        try:
+            self.page.close(self._numpad_dialog)
+        except Exception:
+            self._numpad_dialog.open = False
         self.page.update()
 
     # ─── Table helpers ───
@@ -715,22 +727,38 @@ class SchedulerApp:
                     value=_temp_val,
                     options=[ft.DropdownOption(key=p, text=f"{p}  {desc}") for p, desc in port_options],
                 )
-                self.temp_baud_field = ft.TextField(label="Baud", value="19200", width=100, read_only=True)
-                self.temp_baud_click = ft.GestureDetector(
-                    content=self.temp_baud_field,
-                    on_tap_down=lambda e: self._show_numpad(self.temp_baud_field),
+                self._temp_baud_display = ft.Text("19200", size=14, text_align=ft.TextAlign.CENTER)
+                self.temp_baud_field = ft.Container(
+                    content=ft.Column([
+                        ft.Text("Baud", size=10, color="#666666"),
+                        self._temp_baud_display,
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    width=100, height=48, alignment=ft.Alignment(0, 0),
+                    border=ft.Border.all(1, "#cccccc"), border_radius=4, bgcolor="#ffffff",
+                    on_click=lambda e: self._show_numpad(self.temp_baud_field),
                 )
+                self.temp_baud_field.value = "19200"
+                self.temp_baud_field._display = self._temp_baud_display
+                self.temp_baud_click = self.temp_baud_field
 
                 self.gas_port_field = ft.Dropdown(
                     label="Gas Port (RS-232)", width=200,
                     value=_gas_val,
                     options=[ft.DropdownOption(key=p, text=f"{p}  {desc}") for p, desc in port_options],
                 )
-                self.gas_baud_field = ft.TextField(label="Baud", value="19200", width=100, read_only=True)
-                self.gas_baud_click = ft.GestureDetector(
-                    content=self.gas_baud_field,
-                    on_tap_down=lambda e: self._show_numpad(self.gas_baud_field),
+                self._gas_baud_display = ft.Text("19200", size=14, text_align=ft.TextAlign.CENTER)
+                self.gas_baud_field = ft.Container(
+                    content=ft.Column([
+                        ft.Text("Baud", size=10, color="#666666"),
+                        self._gas_baud_display,
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    width=100, height=48, alignment=ft.Alignment(0, 0),
+                    border=ft.Border.all(1, "#cccccc"), border_radius=4, bgcolor="#ffffff",
+                    on_click=lambda e: self._show_numpad(self.gas_baud_field),
                 )
+                self.gas_baud_field.value = "19200"
+                self.gas_baud_field._display = self._gas_baud_display
+                self.gas_baud_click = self.gas_baud_field
 
                 self._port_refresh_btn = self._make_sq_button(
                     "Refresh Ports", on_click=lambda ev: self._refresh_ports(), width=120)
@@ -774,16 +802,20 @@ class SchedulerApp:
                 self.sp_result_texts = []
                 sp_rows = []
                 for ch in range(4):
-                    sp_inp = ft.TextField(
-                        label=f"CH{ch+1} Setpoint", width=140,
-                        value="0.0", text_size=14,
-                        input_filter=ft.InputFilter(regex_string=r"[0-9.\-]", allow=True),
-                        read_only=True,
+                    sp_display = ft.Text("0.0", size=14, text_align=ft.TextAlign.CENTER)
+                    sp_inp = ft.Container(
+                        content=ft.Column([
+                            ft.Text(f"CH{ch+1} Setpoint", size=10, color="#666666"),
+                            sp_display,
+                        ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                        width=140, height=48, alignment=ft.Alignment(0, 0),
+                        border=ft.Border.all(1, "#cccccc"), border_radius=4, bgcolor="#ffffff",
+                        on_click=lambda e, f=None: self._show_numpad(f),
                     )
-                    sp_click = ft.GestureDetector(
-                        content=sp_inp,
-                        on_tap_down=lambda e, f=sp_inp: self._show_numpad(f),
-                    )
+                    sp_inp.value = "0.0"
+                    sp_inp._display = sp_display
+                    sp_inp.on_change = None
+                    sp_inp.on_click = lambda e, f=sp_inp: self._show_numpad(f)
                     sp_result = ft.Text("", size=12, color="#999999")
                     send_btn = ft.ElevatedButton(
                         f"Send",
@@ -794,7 +826,7 @@ class SchedulerApp:
                     self.sp_result_texts.append(sp_result)
                     sp_rows.append(ft.Row([
                         ft.Text(f"Gas CH{ch+1}", width=70, weight=ft.FontWeight.W_500),
-                        sp_click, send_btn, sp_result,
+                        sp_inp, send_btn, sp_result,
                     ], spacing=8))
 
                 setpoint_section = ft.Container(
