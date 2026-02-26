@@ -33,8 +33,9 @@ ex. ubuntu quick
 
 ```bash
 cd /home/bearpp/smart_gas_system
-rm -rf venv
+git checkout -- .
 git pull origin main
+rm -rf venv
 chmod +x run.sh
 ./run.sh
 ```
