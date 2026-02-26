@@ -206,16 +206,12 @@ class SchedulerApp:
 
         # runtime control for trend updates
         self.trend_running = False
-        self.trend_run_button = self._make_sq_button("Start", on_click=self._toggle_trend)
+        self.schedule_applied = False
+        self.apply_btn = self._make_sq_button("Apply", on_click=self._apply_schedule)
+        self.start_btn = self._make_sq_button("Start", on_click=self._start_schedule)
 
         # status table placeholder
         self.status_table = None
-
-        # zoom/window controls (seconds == samples)
-        self.window_samples = 60
-        self.zoom_label = ft.Text(f"Window: {self.window_samples}s")
-        self.zoom_out_btn = self._make_sq_button("-", on_click=self._zoom_out, width=40)
-        self.zoom_in_btn = self._make_sq_button("+", on_click=self._zoom_in, width=40)
 
         # start async update loop to inject test data and update image (idle until started)
         try:
@@ -233,13 +229,9 @@ class SchedulerApp:
                 self.trend_placeholder,
                 ft.Container(height=8),
                 ft.Row([
-                    self.zoom_out_btn.control,
-                    ft.Container(width=8),
-                    self.zoom_label,
-                    ft.Container(width=8),
-                    self.zoom_in_btn.control,
-                    ft.Container(width=24),
-                    self.trend_run_button.control,
+                    self.apply_btn.control,
+                    ft.Container(width=16),
+                    self.start_btn.control,
                 ], alignment=ft.MainAxisAlignment.CENTER),
             ]), expand=5, padding=12),
         ], expand=True)
@@ -558,12 +550,6 @@ class SchedulerApp:
             self.schedule_content.controls.append(
                 ft.Row([table], alignment=ft.MainAxisAlignment.CENTER))
             self._recompute_temp_rates()
-
-            btn_apply = self._make_sq_button("Apply Temp Schedule", on_click=lambda e: print("Apply temp schedule"))
-            btn_start = self._make_sq_button("Start Schedule", on_click=lambda e: print("Start temp schedule"))
-            self.schedule_content.controls.append(ft.Row([
-                btn_apply.control, ft.Container(width=12), btn_start.control,
-            ], alignment=ft.MainAxisAlignment.CENTER))
 
         else:
             self.schedule_content.controls.append(
@@ -1066,7 +1052,7 @@ class SchedulerApp:
     def _start_logging(self):
         # start trend/logging
         self.trend_running = True
-        self.trend_run_button.text = "Stop"
+        self.start_btn.text = "Stop"
         try:
             self.page.update()
         except Exception:
@@ -1170,7 +1156,7 @@ class SchedulerApp:
                 self.history[i] = deque([init_val] * 600, maxlen=600)
 
             self.trend_running = True
-            self.trend_run_button.text = "Stop"
+            self.start_btn.text = "Stop"
 
             self.page.update()
 
@@ -1201,59 +1187,73 @@ class SchedulerApp:
             prev_temp = t_val
 
     def _render_trend(self) -> str:
-        """Render the full schedule as a dotted target line,
-        and overlay the measured/simulated values that follow along.
-        """
         fig, ax = plt.subplots(figsize=(10, 5.5), dpi=110)
         colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
         total_dur_hours = self._get_total_schedule_duration()
         total_dur_seconds = int(total_dur_hours * 3600) if total_dur_hours and total_dur_hours > 0 else 600
-        total_dur_seconds = max(total_dur_seconds, 60)
+        total_dur_seconds = max(total_dur_seconds, 10)
+
+        if total_dur_seconds < 60:
+            time_unit = "s"
+            time_div = 1.0
+        elif total_dur_seconds < 3600:
+            time_unit = "min"
+            time_div = 60.0
+        else:
+            time_unit = "h"
+            time_div = 3600.0
+
         schedule_pts = min(total_dur_seconds, 3600)
         sched_times_h = [i * total_dur_hours / schedule_pts for i in range(schedule_pts + 1)]
-        sched_times_s = [t * 3600.0 for t in sched_times_h]
+        sched_times_display = [t * 3600.0 / time_div for t in sched_times_h]
 
         elapsed_seconds = int(round(self.schedule_time * 3600.0))
 
         if self.schedule_mode == 'temp':
             sched_targets = [self._get_schedule_target(t) for t in sched_times_h]
-            ax.plot(sched_times_s, sched_targets, color=colors[1], linestyle='--',
+            ax.plot(sched_times_display, sched_targets, color=colors[1], linestyle='--',
                     linewidth=2, label="Schedule", alpha=0.7)
 
             n_measured = min(elapsed_seconds, len(self.measured))
             if n_measured > 1:
                 measured_list = list(self.measured)[-n_measured:]
-                meas_times = [elapsed_seconds - (n_measured - 1 - i) for i in range(n_measured)]
+                meas_times = [(elapsed_seconds - (n_measured - 1 - i)) / time_div for i in range(n_measured)]
                 ax.plot(meas_times, measured_list, color=colors[0], linewidth=2, label="Measured")
 
-            ax.set_ylim(0, 100)
-            ax.set_ylabel("Temperature (°C)", fontsize=13)
+            y_max = max(sched_targets) if sched_targets else 100
+            y_max = max(y_max, 1) * 1.2
+            ax.set_ylim(0, y_max)
+            ax.set_ylabel("Temperature (\u00b0C)", fontsize=13)
 
         else:
+            all_max = 1.0
             for ch in range(4):
                 ch_targets = [self._get_gas_targets(t)[ch] for t in sched_times_h]
-                ax.plot(sched_times_s, ch_targets, color=colors[ch], linestyle='--',
+                ax.plot(sched_times_display, ch_targets, color=colors[ch], linestyle='--',
                         linewidth=1.5, alpha=0.6)
+                ch_max = max(ch_targets) if ch_targets else 0
+                if ch_max > all_max:
+                    all_max = ch_max
 
             n_measured = min(elapsed_seconds, max(len(self.history[i]) for i in range(4)))
             if n_measured > 1:
                 for ch in range(4):
                     ch_data = list(self.history[ch])[-n_measured:]
-                    ch_times = [elapsed_seconds - (n_measured - 1 - i) for i in range(n_measured)]
+                    ch_times = [(elapsed_seconds - (n_measured - 1 - i)) / time_div for i in range(n_measured)]
                     ax.plot(ch_times, ch_data, color=colors[ch], linewidth=2, label=f"CH{ch+1}")
 
-            ax.set_ylim(0, 15)
+            ax.set_ylim(0, all_max * 1.2)
             ax.set_ylabel("Flow (sccm)", fontsize=13)
 
-        ax.set_xlim(0, max(total_dur_seconds, 60))
-        ax.set_xlabel("Time (s)", fontsize=13)
+        ax.set_xlim(0, total_dur_seconds / time_div)
+        ax.set_xlabel(f"Time ({time_unit})", fontsize=13)
         ax.tick_params(axis='both', labelsize=12)
         ax.legend(loc="upper right", fontsize=11)
         ax.grid(True, linestyle="--", alpha=0.4)
 
         if elapsed_seconds > 0 and elapsed_seconds < total_dur_seconds:
-            ax.axvline(x=elapsed_seconds, color='red', linestyle=':', linewidth=1, alpha=0.6)
+            ax.axvline(x=elapsed_seconds / time_div, color='red', linestyle=':', linewidth=1, alpha=0.6)
 
         plt.tight_layout()
         buf = io.BytesIO()
@@ -1297,7 +1297,7 @@ class SchedulerApp:
                         self.trend_image.src = self._render_trend()
                         self.trend_image.update()
                         self.trend_running = False
-                        self.trend_run_button.text = "Start"
+                        self.start_btn.text = "Start"
                         self.page.update()
                         continue
 
@@ -1366,13 +1366,37 @@ class SchedulerApp:
                 print("trend loop error:", ex)
                 await asyncio.sleep(1)
 
-    def _toggle_trend(self, e):
+    def _apply_schedule(self, e=None):
+        self.schedule_applied = True
+        self.trend_running = False
+        self.schedule_time = 0.0
+        self.start_btn.text = "Start"
+
+        if self.schedule_mode == 'temp':
+            init_val = self._get_schedule_target(0.0)
+            self.measured = deque([init_val] * 600, maxlen=600)
+        else:
+            targets = self._get_gas_targets(0.0)
+            for i in range(4):
+                v = targets[i] if targets and i < len(targets) else 0.0
+                self.history[i] = deque([v] * 600, maxlen=600)
+
+        try:
+            self.trend_image.src = self._render_trend()
+            self.trend_image.update()
+            self.page.update()
+        except Exception:
+            pass
+
+    def _start_schedule(self, e=None):
+        if not self.schedule_applied:
+            self._apply_schedule()
+
         self.trend_running = not self.trend_running
-        self.trend_run_button.text = "Stop" if self.trend_running else "Start"
-        # when starting, reset schedule time and measured buffer to begin at 0s
+        self.start_btn.text = "Stop" if self.trend_running else "Start"
+
         if self.trend_running:
             self.schedule_time = 0.0
-
             if self.schedule_mode == 'temp':
                 init_val = self._get_schedule_target(0.0)
                 self.measured = deque([init_val] * 600, maxlen=600)
@@ -1383,28 +1407,6 @@ class SchedulerApp:
                     self.history[i] = deque([v] * 600, maxlen=600)
 
         try:
-            self.page.update()
-        except Exception:
-            pass
-
-    def _zoom_in(self, e):
-        # increase window by 10s, up to 600s
-        self.window_samples = min(600, self.window_samples + 10)
-        self.zoom_label.value = f"Window: {self.window_samples}s"
-        try:
-            self.trend_image.src = self._render_trend()
-            self.trend_image.update()
-            self.page.update()
-        except Exception:
-            pass
-
-    def _zoom_out(self, e):
-        # decrease window by 10s, minimum 10s
-        self.window_samples = max(10, self.window_samples - 10)
-        self.zoom_label.value = f"Window: {self.window_samples}s"
-        try:
-            self.trend_image.src = self._render_trend()
-            self.trend_image.update()
             self.page.update()
         except Exception:
             pass
