@@ -564,12 +564,15 @@ class SchedulerApp:
                 self.conn_status = ft.Text("Not connected", color="red")
                 self.device_type = ft.Dropdown(options=[ft.DropdownOption("Simulator"), ft.DropdownOption("Serial")], value="Simulator", width=180)
 
-                # Temp (RS-485) 포트 설정
-                self.temp_port_field = ft.TextField(label="Temp Port (RS-485)", value="COM7", width=160)
+                import platform
+                _is_win = platform.system() == "Windows"
+                _def_temp = "COM7" if _is_win else "/dev/ttyUSB0"
+                _def_gas = "COM5" if _is_win else "/dev/ttyUSB1"
+
+                self.temp_port_field = ft.TextField(label="Temp Port (RS-485)", value=_def_temp, width=160)
                 self.temp_baud_field = ft.TextField(label="Baud", value="19200", width=100)
 
-                # Gas (RS-232) 포트 설정
-                self.gas_port_field = ft.TextField(label="Gas Port (RS-232)", value="COM5", width=160)
+                self.gas_port_field = ft.TextField(label="Gas Port (RS-232)", value=_def_gas, width=160)
                 self.gas_baud_field = ft.TextField(label="Baud", value="19200", width=100)
 
                 connect_btn = self._make_sq_button("Connect Device", on_click=lambda ev: self._toggle_connection())
