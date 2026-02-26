@@ -628,21 +628,6 @@ class SchedulerApp:
                 "Apply", on_click=lambda e: self._apply_gas_types(), width=70)
             gas_config_row.controls.append(apply_gas_btn.control)
             self.schedule_content.controls.append(gas_config_row)
-
-            sp_row = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=6)
-            for ch in range(4):
-                if self._gas_sp_fields[ch] is None:
-                    self._gas_sp_fields[ch] = self._make_table_input("0.0", w=70, h=30)
-                send_btn = self._make_sq_button(
-                    "Send", on_click=lambda e, c=ch: self._send_gas_sp(c), width=50,
-                    bgcolor="#4CAF50")
-                sp_row.controls.append(
-                    ft.Column([
-                        ft.Text(f"CH{ch+1} SP", size=9, text_align=ft.TextAlign.CENTER),
-                        ft.Row([self._gas_sp_fields[ch], send_btn.control], spacing=2),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=1)
-                )
-            self.schedule_content.controls.append(sp_row)
             self.schedule_content.controls.append(self._gas_status)
             self.schedule_content.controls.append(ft.Divider())
 
@@ -1369,11 +1354,7 @@ class SchedulerApp:
                         if device_data and device_data.get("temperature") is not None:
                             nv = device_data["temperature"]
                         else:
-                            last = self.measured[-1] if len(self.measured) else target
-                            approach = 0.30
-                            noise = random.uniform(-0.25, 0.25)
-                            nv = last + (target - last) * approach + noise
-                            nv = max(0.0, nv)
+                            nv = target
 
                         self.measured.append(nv)
 
@@ -1403,11 +1384,7 @@ class SchedulerApp:
                                     and device_data["gas"][ch].get("pv") is not None):
                                 nv = device_data["gas"][ch]["pv"]
                             else:
-                                last = self.history[ch][-1] if len(self.history[ch]) else ch_target
-                                approach = 0.3
-                                noise = random.uniform(-0.02, 0.02)
-                                nv = last + (ch_target - last) * approach + noise
-                                nv = max(0.0, nv)
+                                nv = ch_target
 
                             self.history[ch].append(nv)
 
