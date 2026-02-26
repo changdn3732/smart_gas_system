@@ -32,8 +32,9 @@ python main.py
 ex. ubuntu quick
 
 ```bash
-git clone https://github.com/changdn3732/smart_gas_system.git
-cd smart_gas_system
+cd /home/bearpp/smart_gas_system
+rm -rf venv
+git pull origin main
 chmod +x run.sh
 ./run.sh
 ```
