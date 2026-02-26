@@ -190,6 +190,9 @@ class SchedulerApp:
         # schedule time in hours (advances with each sample)
         self.schedule_time = 0.0
 
+        # build touch numpad
+        self._build_numpad()
+
         # initial 1x1 PNG placeholder
         placeholder_b64 = (
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVQI12NgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
@@ -241,6 +244,7 @@ class SchedulerApp:
             ]), expand=5, padding=12),
         ], expand=True)
 
+        page.overlay.append(self._numpad_dialog)
         page.add(layout)
 
     def _build_schedule_panel(self):
@@ -309,6 +313,12 @@ class SchedulerApp:
             content = ft.Text(content, size=11,
                               weight=ft.FontWeight.BOLD if header else None,
                               text_align=ft.TextAlign.CENTER)
+        if isinstance(content, ft.TextField):
+            field_ref = content
+            content = ft.GestureDetector(
+                content=content,
+                on_tap_down=lambda e, f=field_ref: self._show_numpad(f),
+            )
         return ft.Container(content=content, width=w, height=h,
                             bgcolor=bg, border=border,
                             alignment=ft.Alignment(0, 0), padding=0)
@@ -317,8 +327,117 @@ class SchedulerApp:
         tf = ft.TextField(value=value, width=w - 6, height=h - 4,
                           text_size=12, text_align=ft.TextAlign.CENTER,
                           content_padding=ft.padding.symmetric(horizontal=2, vertical=2),
-                          border_color="transparent", on_change=on_change)
+                          border_color="transparent", on_change=on_change,
+                          read_only=True)
         return tf
+
+    # ─── Numeric Keypad (touch panel) ───
+
+    def _build_numpad(self):
+        self._numpad_target = None
+        self._numpad_value = ""
+        self._numpad_open = False
+        self._numpad_display = ft.Text(
+            "0", size=32, weight=ft.FontWeight.BOLD,
+            text_align=ft.TextAlign.RIGHT)
+
+        def _kb(label, w=70, bg="#f5f5f5", fg="#000000"):
+            return ft.Container(
+                content=ft.Text(label, size=22, weight=ft.FontWeight.BOLD,
+                                color=fg, text_align=ft.TextAlign.CENTER),
+                width=w, height=60, bgcolor=bg, border_radius=8,
+                alignment=ft.Alignment(0, 0),
+                border=ft.Border.all(1, "#cccccc"),
+                on_click=lambda e, k=label: self._numpad_key(k),
+            )
+
+        ok_btn = ft.Container(
+            content=ft.Text("OK", size=22, weight=ft.FontWeight.BOLD,
+                            color="#ffffff", text_align=ft.TextAlign.CENTER),
+            width=70, height=60, bgcolor="#003366", border_radius=8,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: self._numpad_confirm(),
+        )
+
+        pad = ft.Column([
+            ft.Container(
+                content=self._numpad_display,
+                bgcolor="#f9f9f9", border=ft.Border.all(2, "#003366"),
+                border_radius=8,
+                padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                width=310, alignment=ft.Alignment(1, 0),
+            ),
+            ft.Container(height=8),
+            ft.Row([_kb("7"), _kb("8"), _kb("9"), _kb("\u232b", bg="#ffe0e0")],
+                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+            ft.Row([_kb("4"), _kb("5"), _kb("6"), _kb("C", bg="#ffe0e0")],
+                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+            ft.Row([_kb("1"), _kb("2"), _kb("3"), _kb("\u00b1", bg="#e0e0ff")],
+                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+            ft.Row([_kb("0", w=148), _kb("."), ok_btn],
+                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+        ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+
+        self._numpad_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("\uc22b\uc790 \uc785\ub825", size=18),
+            content=ft.Container(content=pad, width=340),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._numpad_cancel()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+    def _show_numpad(self, target_field):
+        if self._numpad_open:
+            return
+        self._numpad_open = True
+        self._numpad_target = target_field
+        self._numpad_value = target_field.value or ""
+        self._numpad_display.value = self._numpad_value or "0"
+        self._numpad_dialog.open = True
+        self.page.update()
+
+    def _numpad_key(self, key):
+        if key == "\u232b":
+            self._numpad_value = self._numpad_value[:-1]
+        elif key == "C":
+            self._numpad_value = ""
+        elif key == "\u00b1":
+            if self._numpad_value.startswith("-"):
+                self._numpad_value = self._numpad_value[1:]
+            elif self._numpad_value:
+                self._numpad_value = "-" + self._numpad_value
+        elif key == ".":
+            if "." not in self._numpad_value:
+                self._numpad_value = (self._numpad_value or "0") + "."
+        else:
+            self._numpad_value += key
+
+        self._numpad_display.value = self._numpad_value or "0"
+        try:
+            self._numpad_display.update()
+        except Exception:
+            self.page.update()
+
+    def _numpad_confirm(self):
+        if self._numpad_target:
+            self._numpad_target.value = self._numpad_value or "0"
+            if self._numpad_target.on_change:
+                try:
+                    self._numpad_target.on_change(None)
+                except Exception:
+                    pass
+        self._numpad_open = False
+        self._numpad_dialog.open = False
+        self.page.update()
+
+    def _numpad_cancel(self):
+        self._numpad_open = False
+        self._numpad_dialog.open = False
+        self.page.update()
+
+    # ─── Table helpers ───
 
     def _build_table(self, headers, data_rows, col_widths, row_height=34):
         """Build an Excel-style table with proper borders and center alignment."""
@@ -552,6 +671,23 @@ class SchedulerApp:
 
 
 
+    def _scan_ports(self):
+        """Return list of (port_name, description) for available serial ports."""
+        try:
+            from serial.tools import list_ports
+            ports = sorted(list_ports.comports(), key=lambda p: p.device)
+            return [(p.device, p.description) for p in ports]
+        except Exception:
+            return []
+
+    def _refresh_ports(self):
+        """Rescan serial ports and update the dropdown options."""
+        port_options = self._scan_ports()
+        opts = [ft.DropdownOption(key=p, text=f"{p}  {desc}") for p, desc in port_options]
+        self.temp_port_field.options = opts
+        self.gas_port_field.options = opts
+        self.page.update()
+
     def _build_device_indicator(self, label):
         icon = ft.Icon(ft.Icons.CIRCLE, size=14, color="red")
         text = ft.Text(label, size=13, width=160)
@@ -564,16 +700,40 @@ class SchedulerApp:
                 self.conn_status = ft.Text("Not connected", color="red")
                 self.device_type = ft.Dropdown(options=[ft.DropdownOption("Simulator"), ft.DropdownOption("Serial")], value="Simulator", width=180)
 
+                port_options = self._scan_ports()
+
                 import platform
                 _is_win = platform.system() == "Windows"
                 _def_temp = "COM7" if _is_win else "/dev/ttyUSB0"
                 _def_gas = "COM5" if _is_win else "/dev/ttyUSB1"
 
-                self.temp_port_field = ft.TextField(label="Temp Port (RS-485)", value=_def_temp, width=160)
-                self.temp_baud_field = ft.TextField(label="Baud", value="19200", width=100)
+                _temp_val = _def_temp if _def_temp in [p for p, _ in port_options] else (port_options[0][0] if port_options else "")
+                _gas_val = _def_gas if _def_gas in [p for p, _ in port_options] else (port_options[1][0] if len(port_options) > 1 else (port_options[0][0] if port_options else ""))
 
-                self.gas_port_field = ft.TextField(label="Gas Port (RS-232)", value=_def_gas, width=160)
-                self.gas_baud_field = ft.TextField(label="Baud", value="19200", width=100)
+                self.temp_port_field = ft.Dropdown(
+                    label="Temp Port (RS-485)", width=200,
+                    value=_temp_val,
+                    options=[ft.DropdownOption(key=p, text=f"{p}  {desc}") for p, desc in port_options],
+                )
+                self.temp_baud_field = ft.TextField(label="Baud", value="19200", width=100, read_only=True)
+                self.temp_baud_click = ft.GestureDetector(
+                    content=self.temp_baud_field,
+                    on_tap_down=lambda e: self._show_numpad(self.temp_baud_field),
+                )
+
+                self.gas_port_field = ft.Dropdown(
+                    label="Gas Port (RS-232)", width=200,
+                    value=_gas_val,
+                    options=[ft.DropdownOption(key=p, text=f"{p}  {desc}") for p, desc in port_options],
+                )
+                self.gas_baud_field = ft.TextField(label="Baud", value="19200", width=100, read_only=True)
+                self.gas_baud_click = ft.GestureDetector(
+                    content=self.gas_baud_field,
+                    on_tap_down=lambda e: self._show_numpad(self.gas_baud_field),
+                )
+
+                self._port_refresh_btn = self._make_sq_button(
+                    "Refresh Ports", on_click=lambda ev: self._refresh_ports(), width=120)
 
                 connect_btn = self._make_sq_button("Connect Device", on_click=lambda ev: self._toggle_connection())
 
@@ -618,6 +778,11 @@ class SchedulerApp:
                         label=f"CH{ch+1} Setpoint", width=140,
                         value="0.0", text_size=14,
                         input_filter=ft.InputFilter(regex_string=r"[0-9.\-]", allow=True),
+                        read_only=True,
+                    )
+                    sp_click = ft.GestureDetector(
+                        content=sp_inp,
+                        on_tap_down=lambda e, f=sp_inp: self._show_numpad(f),
                     )
                     sp_result = ft.Text("", size=12, color="#999999")
                     send_btn = ft.ElevatedButton(
@@ -629,7 +794,7 @@ class SchedulerApp:
                     self.sp_result_texts.append(sp_result)
                     sp_rows.append(ft.Row([
                         ft.Text(f"Gas CH{ch+1}", width=70, weight=ft.FontWeight.W_500),
-                        sp_inp, send_btn, sp_result,
+                        sp_click, send_btn, sp_result,
                     ], spacing=8))
 
                 setpoint_section = ft.Container(
@@ -663,11 +828,13 @@ class SchedulerApp:
                     ft.Text("Port Configuration", size=14, weight=ft.FontWeight.BOLD),
                     ft.Row([
                         ft.Text("Device Type:"), self.device_type,
+                        ft.Container(width=16),
+                        self._port_refresh_btn.control,
                     ]),
                     ft.Row([
-                        self.temp_port_field, ft.Container(width=8), self.temp_baud_field,
+                        self.temp_port_field, ft.Container(width=8), self.temp_baud_click,
                         ft.Container(width=20),
-                        self.gas_port_field, ft.Container(width=8), self.gas_baud_field,
+                        self.gas_port_field, ft.Container(width=8), self.gas_baud_click,
                     ]),
                 ], spacing=8)
 
@@ -739,9 +906,9 @@ class SchedulerApp:
                     self._update_device_indicator(i, True)
 
             else:
-                temp_port = self.temp_port_field.value.strip()
+                temp_port = (self.temp_port_field.value or "").strip()
                 temp_baud = int(self.temp_baud_field.value)
-                gas_port = self.gas_port_field.value.strip()
+                gas_port = (self.gas_port_field.value or "").strip()
                 gas_baud = int(self.gas_baud_field.value)
 
                 # 인디케이터를 "Checking..." 상태로
