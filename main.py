@@ -75,18 +75,53 @@ class SchedulerApp:
 
     def _apply_gas_types(self):
         if not self.device_service:
-            self.device_service = DeviceService()
+            self._gas_status.value = "DeviceService not connected"
+            self._gas_status.color = "red"
+            self.page.update()
+            return
+        results = []
         for ch in range(4):
             gas_name = self.channel_gases[ch]
             gas_index = self.gas_name_to_index.get(gas_name)
             if gas_index is None:
-                print(f"CH{ch+1}: unknown gas '{gas_name}'")
                 continue
             try:
                 ok = self.device_service.write_gas_type(ch, gas_index)
+                if ok:
+                    results.append(f"CH{ch+1}:{gas_name}")
                 print(f"CH{ch+1} gas type → {gas_name} (index {gas_index}): {'OK' if ok else 'FAIL'}")
             except Exception as ex:
                 print(f"CH{ch+1} gas type 전송 오류: {ex}")
+        if results:
+            self._gas_status.value = f"Gas type set: {', '.join(results)}"
+            self._gas_status.color = "#4CAF50"
+        else:
+            self._gas_status.value = "No channel responded"
+            self._gas_status.color = "#FF9800"
+        self.page.update()
+
+    def _send_gas_sp(self, ch: int):
+        sp_field = self._gas_sp_fields[ch]
+        try:
+            val = float(sp_field.value)
+        except (ValueError, TypeError):
+            self._gas_status.value = f"CH{ch+1}: Invalid value"
+            self._gas_status.color = "red"
+            self.page.update()
+            return
+        if not self.device_service:
+            self._gas_status.value = "DeviceService not connected"
+            self._gas_status.color = "red"
+            self.page.update()
+            return
+        try:
+            self.device_service.set_gas(device_index=ch, channel=1, value=val)
+            self._gas_status.value = f"CH{ch+1} SP → {val}"
+            self._gas_status.color = "#4CAF50"
+        except Exception as ex:
+            self._gas_status.value = f"CH{ch+1} SP 실패: {ex}"
+            self._gas_status.color = "red"
+        self.page.update()
 
     def _toggle_mixing_channel(self, ch: int):
         # 선택 상태 토글
@@ -162,6 +197,8 @@ class SchedulerApp:
         self.device_service = None
         self.channel_gases = ["N2", "N2", "N2", "N2"]
         self.gas_type_dropdowns = [None, None, None, None]
+        self._gas_status = ft.Text("", size=12)
+        self._gas_sp_fields = [None, None, None, None]
         # Prepare in-memory history for 4 channels (keep up to 600 samples)
         self.history = {i: deque([0.0] * 600, maxlen=600) for i in range(4)}
         # single measured series that will approximate the schedule (keep up to 600 samples)
@@ -591,6 +628,22 @@ class SchedulerApp:
                 "Apply", on_click=lambda e: self._apply_gas_types(), width=70)
             gas_config_row.controls.append(apply_gas_btn.control)
             self.schedule_content.controls.append(gas_config_row)
+
+            sp_row = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=6)
+            for ch in range(4):
+                if self._gas_sp_fields[ch] is None:
+                    self._gas_sp_fields[ch] = self._make_table_input("0.0", w=70, h=30)
+                send_btn = self._make_sq_button(
+                    "Send", on_click=lambda e, c=ch: self._send_gas_sp(c), width=50,
+                    bgcolor="#4CAF50")
+                sp_row.controls.append(
+                    ft.Column([
+                        ft.Text(f"CH{ch+1} SP", size=9, text_align=ft.TextAlign.CENTER),
+                        ft.Row([self._gas_sp_fields[ch], send_btn.control], spacing=2),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=1)
+                )
+            self.schedule_content.controls.append(sp_row)
+            self.schedule_content.controls.append(self._gas_status)
             self.schedule_content.controls.append(ft.Divider())
 
             if self.control_mode == "Mixing Mode":
@@ -1302,44 +1355,59 @@ class SchedulerApp:
                         continue
 
                     # -------------------------------------------------
-                    # 4️⃣ 그래프 데이터 업데이트
+                    # 4️⃣ 스케줄 타겟 → 장치 전송 + 그래프 업데이트
                     # -------------------------------------------------
                     if self.schedule_mode == "temp":
-                        # 장비값 우선, 없으면 스케줄 타겟
                         target = self._get_schedule_target(self.schedule_time)
 
-                        last = self.measured[-1] if len(self.measured) else target
+                        if hasattr(self, "device_service") and self.device_service:
+                            try:
+                                self.device_service.set_temperature(target)
+                            except Exception as ex:
+                                print(f"Temp SV 전송 오류: {ex}")
 
-                        approach = 0.30      # 0.2~0.3 사이가 자연스러움
-                        noise = random.uniform(-0.25, 0.25)
-
-                        nv = last + (target - last) * approach + noise
-                        nv = max(0.0, nv)
+                        if device_data and device_data.get("temperature") is not None:
+                            nv = device_data["temperature"]
+                        else:
+                            last = self.measured[-1] if len(self.measured) else target
+                            approach = 0.30
+                            noise = random.uniform(-0.25, 0.25)
+                            nv = last + (target - last) * approach + noise
+                            nv = max(0.0, nv)
 
                         self.measured.append(nv)
 
                     else:  # gas mode
 
                         targets = self._get_gas_targets(self.schedule_time)
-
                         manual_mode = (self.control_mode == "Manual Mode")
 
                         for ch in range(4):
-
                             ch_target = targets[ch] if targets and ch < len(targets) else 0.0
-                            last = self.history[ch][-1] if len(self.history[ch]) else ch_target
 
-                            # Manual Mode일 때 비활성 채널은 값 유지
                             if manual_mode:
                                 if self.active_gas_channel is not None and ch != self.active_gas_channel:
+                                    last = self.history[ch][-1] if len(self.history[ch]) else 0.0
                                     self.history[ch].append(last)
                                     continue
 
-                            approach = 0.3
-                            noise = random.uniform(-0.02, 0.02)
+                            if hasattr(self, "device_service") and self.device_service:
+                                try:
+                                    self.device_service.set_gas(device_index=ch, channel=1, value=ch_target)
+                                except Exception as ex:
+                                    print(f"Gas CH{ch+1} SP 전송 오류: {ex}")
 
-                            nv = last + (ch_target - last) * approach + noise
-                            nv = max(0.0, nv)
+                            if (device_data and device_data.get("gas")
+                                    and ch < len(device_data["gas"])
+                                    and device_data["gas"][ch] is not None
+                                    and device_data["gas"][ch].get("pv") is not None):
+                                nv = device_data["gas"][ch]["pv"]
+                            else:
+                                last = self.history[ch][-1] if len(self.history[ch]) else ch_target
+                                approach = 0.3
+                                noise = random.uniform(-0.02, 0.02)
+                                nv = last + (ch_target - last) * approach + noise
+                                nv = max(0.0, nv)
 
                             self.history[ch].append(nv)
 
