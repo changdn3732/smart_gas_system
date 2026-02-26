@@ -72,6 +72,28 @@ class SchedulerApp:
     def _on_gas_type_change(self, ch: int, gas: str):
         self.channel_gases[ch] = gas
         print(f"CH{ch+1} Gas changed to {gas}")
+        if not self.device_service:
+            self._gas_status.value = "DeviceService not connected"
+            self._gas_status.color = "red"
+            self.page.update()
+            return
+        gas_index = self.gas_name_to_index.get(gas)
+        if gas_index is None:
+            return
+        try:
+            ok = self.device_service.write_gas_type(ch, gas_index)
+            if ok:
+                self._gas_status.value = f"CH{ch+1} → {gas} OK"
+                self._gas_status.color = "#4CAF50"
+            else:
+                self._gas_status.value = f"CH{ch+1} → {gas} FAIL"
+                self._gas_status.color = "#FF9800"
+            print(f"CH{ch+1} gas type → {gas} (index {gas_index}): {'OK' if ok else 'FAIL'}")
+        except Exception as ex:
+            self._gas_status.value = f"CH{ch+1} 전송 오류: {ex}"
+            self._gas_status.color = "red"
+            print(f"CH{ch+1} gas type 전송 오류: {ex}")
+        self.page.update()
 
     def _apply_gas_types(self):
         if not self.device_service:
