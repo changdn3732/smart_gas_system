@@ -281,19 +281,17 @@ class UT32AController:
         return value
     
     def _read_decimal_point(self):
-        """소수점 위치 읽기"""
+        """소수점 위치 읽기 (scale_factor는 항상 10 고정)"""
         try:
             decimal = self._read_register(INPUT_REGISTERS['DECIMAL'])
             if decimal is not None:
                 self.data.decimal_point = decimal
-                self.scale_factor = 10 ** decimal
-                self.log(f"소수점 위치: {decimal} (스케일: {self.scale_factor})")
+                self.log(f"소수점 위치: {decimal} (scale_factor 고정: 10)")
             else:
-                self.log("소수점 읽기 실패 → 기본값 사용 (scale=10)")
-                self.scale_factor = 10.0
+                self.log("소수점 읽기 실패")
         except Exception:
-            self.log("소수점 읽기 예외 → 기본값 사용 (scale=10)")
-            self.scale_factor = 10.0
+            self.log("소수점 읽기 예외")
+        self.scale_factor = 10.0
     
     # ==================== 읽기 함수 ====================
     
