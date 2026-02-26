@@ -181,14 +181,14 @@ class DeviceService:
             try:
                 ok = self.gas_client.connect()
                 print(f"[DeviceService] Gas client 재연결: {'성공' if ok else '실패'}")
-                if ok:
-                    for dev in self.gas_devices:
-                        dev.client = self.gas_client
-                        dev.connected = True
-                return ok
+                if not ok:
+                    return False
             except Exception as e:
                 print(f"[DeviceService] Gas client 재연결 오류: {e}")
                 return False
+        for dev in self.gas_devices:
+            dev.client = self.gas_client
+            dev.connected = True
         return True
 
     # =====================================================

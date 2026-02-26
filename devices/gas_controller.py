@@ -156,6 +156,8 @@ class GasDeviceReader:
             return None
 
         try:
+            if hasattr(self.client, 'socket') and self.client.socket:
+                self.client.socket.reset_input_buffer()
             result = self.client.read_input_registers(
                 address=address,
                 count=2,
@@ -178,6 +180,8 @@ class GasDeviceReader:
             return None
 
         try:
+            if hasattr(self.client, 'socket') and self.client.socket:
+                self.client.socket.reset_input_buffer()
             result = self.client.read_input_registers(
                 address=address,
                 count=1,
@@ -273,12 +277,17 @@ class GasDeviceReader:
                      f"regs={registers}, device_id={self.slave_id}, "
                      f"socket_open={self.client.connected}")
 
+            if hasattr(self.client, 'socket') and self.client.socket:
+                self.client.socket.reset_input_buffer()
             self.client.write_registers(
                 address=address,
                 values=registers,
                 device_id=self.slave_id,
                 no_response_expected=True,
             )
+            time.sleep(0.05)
+            if hasattr(self.client, 'socket') and self.client.socket:
+                self.client.socket.reset_input_buffer()
             self.log(f"쓰기 완료: addr={address}, val={value}")
             return True
 
@@ -292,12 +301,17 @@ class GasDeviceReader:
             return False
 
         try:
+            if hasattr(self.client, 'socket') and self.client.socket:
+                self.client.socket.reset_input_buffer()
             self.client.write_registers(
                 address=address,
                 values=values,
                 device_id=self.slave_id,
                 no_response_expected=True,
             )
+            time.sleep(0.05)
+            if hasattr(self.client, 'socket') and self.client.socket:
+                self.client.socket.reset_input_buffer()
             return True
 
         except Exception as e:
@@ -332,6 +346,8 @@ class GasDeviceReader:
         if not ok1:
             self.log("Gas enable (1002) 실패")
             return False
+
+        time.sleep(0.1)
 
         # Step 2: 주소 1004에 gas_id
         ok2 = self._write_multi_registers(REGISTERS['GAS_SELECT'], [gas_index, 0])
