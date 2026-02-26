@@ -31,12 +31,12 @@ python main.py
 ```
 ex. ubuntu quick
 
-'''bash
+```bash
 git clone https://github.com/changdn3732/smart_gas_system.git
 cd smart_gas_system
 chmod +x run.sh
 ./run.sh
-'''
+```
 
 Notes:
 - Requires `flet` package. The UI is intentionally minimal and focuses on the scheduling elements requested.
