@@ -196,35 +196,33 @@ class DeviceService:
     # =====================================================
     def set_gas(self, device_index, channel, value):
         if 0 <= device_index < len(self.gas_devices):
-            if self.connection_status["gas"][device_index]:
-                if not self._ensure_gas_connected():
-                    print(f"Gas CH{device_index+1}: 연결 끊김, 전송 불가")
-                    return
-                try:
-                    dev = self.gas_devices[device_index]
-                    dev.connected = True
-                    print(f"[SET_GAS] CH{device_index+1} (ID:{dev.slave_id}) setpoint={value}, "
-                          f"client.connected={self.gas_client.connected}")
-                    ok = dev.write_setpoint(value)
-                    print(f"[SET_GAS] write_setpoint 결과: {ok}")
-                except Exception as e:
-                    print(f"Gas CH{device_index+1} setpoint 오류: {e}")
+            if not self._ensure_gas_connected():
+                print(f"Gas CH{device_index+1}: 연결 끊김, 전송 불가")
+                return
+            try:
+                dev = self.gas_devices[device_index]
+                dev.connected = True
+                print(f"[SET_GAS] CH{device_index+1} (ID:{dev.slave_id}) setpoint={value}, "
+                      f"client.connected={self.gas_client.connected}")
+                ok = dev.write_setpoint(value)
+                print(f"[SET_GAS] write_setpoint 결과: {ok}")
+            except Exception as e:
+                print(f"Gas CH{device_index+1} setpoint 오류: {e}")
 
     def write_gas_type(self, device_index, gas_index):
         if 0 <= device_index < len(self.gas_devices):
-            if self.connection_status["gas"][device_index]:
-                if not self._ensure_gas_connected():
-                    print(f"Gas CH{device_index+1}: 연결 끊김, gas type 전송 불가")
-                    return False
-                try:
-                    dev = self.gas_devices[device_index]
-                    dev.connected = True
-                    ok = dev.write_gas(gas_index)
-                    print(f"[SET_GAS_TYPE] CH{device_index+1} gas_index={gas_index} 결과: {ok}")
-                    return ok
-                except Exception as e:
-                    print(f"Gas CH{device_index+1} gas type 오류: {e}")
-                    return False
+            if not self._ensure_gas_connected():
+                print(f"Gas CH{device_index+1}: 연결 끊김, gas type 전송 불가")
+                return False
+            try:
+                dev = self.gas_devices[device_index]
+                dev.connected = True
+                ok = dev.write_gas(gas_index)
+                print(f"[SET_GAS_TYPE] CH{device_index+1} gas_index={gas_index} 결과: {ok}")
+                return ok
+            except Exception as e:
+                print(f"Gas CH{device_index+1} gas type 오류: {e}")
+                return False
         return False
 
     # =====================================================
