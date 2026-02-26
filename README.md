@@ -32,7 +32,7 @@ python main.py
 ex. ubuntu quick
 
 ```bash
-cd /home/bearpp/smart_gas_system
+cd /smart_gas_system
 git checkout -- .
 git pull origin main
 rm -rf venv
