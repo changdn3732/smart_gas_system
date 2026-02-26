@@ -251,6 +251,7 @@ class SchedulerApp:
 
         # build touch numpad
         self._build_numpad()
+        self._build_duration_pad()
 
         # initial 1x1 PNG placeholder
         placeholder_b64 = (
@@ -295,7 +296,7 @@ class SchedulerApp:
             ]), expand=5, padding=12),
         ], expand=True)
 
-        page.add(ft.Stack([layout, self._numpad_overlay], expand=True))
+        page.add(ft.Stack([layout, self._numpad_overlay, self._durpad_overlay], expand=True))
 
     def _build_schedule_panel(self):
         temp_btn = self._make_sq_button("Temperature", on_click=lambda e: self._switch_schedule_mode("temp"))
@@ -367,6 +368,24 @@ class SchedulerApp:
                             bgcolor=bg, border=border,
                             alignment=ft.Alignment(0, 0), padding=0)
 
+    @staticmethod
+    def _parse_duration_to_hours(text: str) -> float:
+        """Parse HH:MM:SS or plain number (hours) to float hours."""
+        text = (text or "0").strip()
+        if ":" in text:
+            parts = text.split(":")
+            try:
+                h = int(parts[0]) if len(parts) > 0 and parts[0] else 0
+                m = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+                s = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+                return h + m / 60.0 + s / 3600.0
+            except ValueError:
+                return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            return 0.0
+
     def _make_table_input(self, value="0.0", w=80, h=34, on_change=None):
         display = ft.Text(value, size=12, text_align=ft.TextAlign.CENTER)
         cell = ft.Container(
@@ -380,6 +399,23 @@ class SchedulerApp:
         cell.value = value
         cell.on_change = on_change
         cell._display = display
+        cell._is_duration = False
+        return cell
+
+    def _make_duration_input(self, value="00:00:30", w=90, h=34, on_change=None):
+        display = ft.Text(value, size=12, text_align=ft.TextAlign.CENTER)
+        cell = ft.Container(
+            content=display,
+            width=w, height=h,
+            alignment=ft.Alignment(0, 0),
+            bgcolor="#ffffff",
+            border_radius=2,
+            on_click=lambda e: self._show_duration_pad(cell),
+        )
+        cell.value = value
+        cell.on_change = on_change
+        cell._display = display
+        cell._is_duration = True
         return cell
 
     # ─── Numeric Keypad (touch panel) ───
@@ -452,6 +488,128 @@ class SchedulerApp:
             visible=False,
             on_click=lambda e: self._numpad_cancel(),
         )
+
+    def _build_duration_pad(self):
+        self._durpad_target = None
+        self._durpad_value = ""
+        self._durpad_open = False
+        self._durpad_display = ft.Text(
+            "00:00:00", size=32, weight=ft.FontWeight.BOLD,
+            text_align=ft.TextAlign.RIGHT)
+
+        def _kb(label, w=70, bg="#f5f5f5", fg="#000000"):
+            return ft.Container(
+                content=ft.Text(label, size=22, weight=ft.FontWeight.BOLD,
+                                color=fg, text_align=ft.TextAlign.CENTER),
+                width=w, height=60, bgcolor=bg, border_radius=8,
+                alignment=ft.Alignment(0, 0),
+                border=ft.Border.all(1, "#cccccc"),
+                on_click=lambda e, k=label: self._durpad_key(k),
+            )
+
+        ok_btn = ft.Container(
+            content=ft.Text("OK", size=22, weight=ft.FontWeight.BOLD,
+                            color="#ffffff", text_align=ft.TextAlign.CENTER),
+            width=70, height=60, bgcolor="#003366", border_radius=8,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: self._durpad_confirm(),
+        )
+
+        cancel_btn = ft.Container(
+            content=ft.Text("Cancel", size=16, color="#666666",
+                            text_align=ft.TextAlign.CENTER),
+            width=310, height=40, bgcolor="#eeeeee", border_radius=8,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: self._durpad_cancel(),
+        )
+
+        pad_card = ft.Container(
+            content=ft.Column([
+                ft.Text("시간 입력 (HH:MM:SS)", size=18, weight=ft.FontWeight.BOLD),
+                ft.Container(height=4),
+                ft.Container(
+                    content=self._durpad_display,
+                    bgcolor="#f9f9f9", border=ft.Border.all(2, "#003366"),
+                    border_radius=8, padding=12,
+                    width=310, alignment=ft.Alignment(1, 0),
+                ),
+                ft.Container(height=8),
+                ft.Row([_kb("7"), _kb("8"), _kb("9"), _kb("\u232b", bg="#ffe0e0")],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Row([_kb("4"), _kb("5"), _kb("6"), _kb("C", bg="#ffe0e0")],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Row([_kb("1"), _kb("2"), _kb("3"), _kb(":", bg="#e0e0ff")],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Row([_kb("0", w=148), _kb("00"), ok_btn],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Container(height=4),
+                cancel_btn,
+            ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            width=360, bgcolor="#ffffff", border_radius=12,
+            padding=20, border=ft.Border.all(2, "#003366"),
+        )
+
+        self._durpad_overlay = ft.Container(
+            content=pad_card,
+            bgcolor="rgba(0,0,0,0.4)",
+            alignment=ft.Alignment(0, 0),
+            expand=True,
+            visible=False,
+            on_click=lambda e: self._durpad_cancel(),
+        )
+
+    def _format_duration(self, raw: str) -> str:
+        digits = raw.replace(":", "")
+        digits = digits.lstrip("0") or "0"
+        digits = digits.zfill(6)
+        if len(digits) > 6:
+            digits = digits[-6:]
+        return f"{digits[0:2]}:{digits[2:4]}:{digits[4:6]}"
+
+    def _show_duration_pad(self, target_field):
+        if self._durpad_open:
+            return
+        self._durpad_open = True
+        self._durpad_target = target_field
+        cur = (target_field.value or "00:00:00").replace(":", "")
+        self._durpad_value = cur
+        self._durpad_display.value = self._format_duration(cur)
+        self._durpad_overlay.visible = True
+        self.page.update()
+
+    def _durpad_key(self, key):
+        if key == "\u232b":
+            self._durpad_value = self._durpad_value[:-1]
+        elif key == "C":
+            self._durpad_value = ""
+        elif key == ":":
+            pass
+        elif key == "00":
+            self._durpad_value += "00"
+        else:
+            self._durpad_value += key
+        self._durpad_display.value = self._format_duration(self._durpad_value)
+        self.page.update()
+
+    def _durpad_confirm(self):
+        if self._durpad_target:
+            val = self._format_duration(self._durpad_value)
+            self._durpad_target.value = val
+            if hasattr(self._durpad_target, '_display'):
+                self._durpad_target._display.value = val
+            if hasattr(self._durpad_target, 'on_change') and self._durpad_target.on_change:
+                try:
+                    self._durpad_target.on_change(None)
+                except Exception:
+                    pass
+        self._durpad_open = False
+        self._durpad_overlay.visible = False
+        self.page.update()
+
+    def _durpad_cancel(self):
+        self._durpad_open = False
+        self._durpad_overlay.visible = False
+        self.page.update()
 
     def _show_numpad(self, target_field):
         if self._numpad_open:
@@ -582,8 +740,8 @@ class SchedulerApp:
                     self.temp_steps[i]["temp_field"] = self._make_table_input(
                         "25.0", w=C_W, h=C_H,
                         on_change=lambda e, idx=i: self._on_temp_or_dur_change(idx))
-                    self.temp_steps[i]["dur_field"] = self._make_table_input(
-                        "0.5", w=C_W, h=C_H,
+                    self.temp_steps[i]["dur_field"] = self._make_duration_input(
+                        "00:00:30", w=C_W, h=C_H,
                         on_change=lambda e, idx=i: self._on_temp_or_dur_change(idx))
                     self.temp_steps[i]["rate_text"] = ft.Text(
                         "-", size=10, text_align=ft.TextAlign.CENTER)
@@ -601,7 +759,7 @@ class SchedulerApp:
                 ])
 
             table = self._build_table(
-                headers=["Step", "Temp (°C)", "Duration (h)", "Rate (°/h)"],
+                headers=["Step", "Temp (°C)", "Duration", "Rate (°/h)"],
                 data_rows=data_rows,
                 col_widths=[50, C_W, C_W, C_W],
                 row_height=C_H,
@@ -668,7 +826,7 @@ class SchedulerApp:
                     slot = self.mixing_steps[step]
                     if not slot["setpoint"]:
                         slot["setpoint"] = self._make_table_input("0.0", w=C_W, h=C_H)
-                        slot["dur_field"] = self._make_table_input("0.5", w=C_W, h=C_H)
+                        slot["dur_field"] = self._make_duration_input("00:00:30", w=C_W, h=C_H)
 
                 data_rows = []
                 for step in range(8):
@@ -679,7 +837,7 @@ class SchedulerApp:
                     data_rows.append([toggle, slot["setpoint"], slot["dur_field"]])
 
                 table = self._build_table(
-                    headers=["Step", "SP (sccm)", "Duration (h)"],
+                    headers=["Step", "SP (sccm)", "Duration"],
                     data_rows=data_rows,
                     col_widths=[50, C_W, C_W],
                     row_height=C_H,
@@ -703,7 +861,7 @@ class SchedulerApp:
                     slot = self.gas_steps[ch][step]
                     if not slot["setpoint"]:
                         slot["setpoint"] = self._make_table_input("0.0", w=C_W, h=C_H)
-                        slot["dur_field"] = self._make_table_input("0.5", w=C_W, h=C_H)
+                        slot["dur_field"] = self._make_duration_input("00:00:30", w=C_W, h=C_H)
 
                 data_rows = []
                 for step in range(8):
@@ -714,7 +872,7 @@ class SchedulerApp:
                     data_rows.append([toggle, slot["setpoint"], slot["dur_field"]])
 
                 table = self._build_table(
-                    headers=["Step", "SP (sccm)", "Duration (h)"],
+                    headers=["Step", "SP (sccm)", "Duration"],
                     data_rows=data_rows,
                     col_widths=[50, C_W, C_W],
                     row_height=C_H,
@@ -1233,10 +1391,7 @@ class SchedulerApp:
                 t_val = float(tf.value) if tf and tf.value != "" else prev_temp
             except Exception:
                 t_val = prev_temp
-            try:
-                d_val = float(df.value) if df and df.value != "" else 0.0
-            except Exception:
-                d_val = 0.0
+            d_val = self._parse_duration_to_hours(df.value) if df and df.value != "" else 0.0
 
             if d_val > 0:
                 rate = (t_val - prev_temp) / d_val
@@ -1487,10 +1642,7 @@ class SchedulerApp:
                 if not self.temp_step_enabled[i]:
                     continue
                 df = s.get("dur_field")
-                try:
-                    total += float(df.value) if df and df.value != "" else 0.0
-                except Exception:
-                    pass
+                total += self._parse_duration_to_hours(df.value) if df and df.value != "" else 0.0
             return total
         else:
             if self.control_mode == "Mixing Mode":
@@ -1499,10 +1651,7 @@ class SchedulerApp:
                     if not self.mixing_step_enabled[i]:
                         continue
                     df = slot.get("dur_field")
-                    try:
-                        total += float(df.value) if df and df.value != "" else 0.0
-                    except Exception:
-                        pass
+                    total += self._parse_duration_to_hours(df.value) if df and df.value != "" else 0.0
                 return total
             else:
                 max_total = 0.0
@@ -1512,10 +1661,7 @@ class SchedulerApp:
                         if not self.gas_step_enabled[ch_idx][i]:
                             continue
                         df = slot.get("dur_field")
-                        try:
-                            ch_total += float(df.value) if df and df.value != "" else 0.0
-                        except Exception:
-                            pass
+                        ch_total += self._parse_duration_to_hours(df.value) if df and df.value != "" else 0.0
                     if ch_total > max_total:
                         max_total = ch_total
                 return max_total
@@ -1536,10 +1682,7 @@ class SchedulerApp:
                     t_val = float(tf.value) if tf and tf.value != "" else None
                 except Exception:
                     t_val = None
-                try:
-                    d_val = float(df.value) if df and df.value != "" else 0.0
-                except Exception:
-                    d_val = 0.0
+                d_val = self._parse_duration_to_hours(df.value) if df and df.value != "" else 0.0
                 if t_val is None:
                     continue
                 steps.append((t_val, d_val))
@@ -1585,13 +1728,10 @@ class SchedulerApp:
 
                 try:
                     s_val = float(sp.value) if sp and sp.value != "" else None
-                except:
+                except Exception:
                     s_val = None
 
-                try:
-                    d_val = float(df.value) if df and df.value != "" else 0.0
-                except:
-                    d_val = 0.0
+                d_val = self._parse_duration_to_hours(df.value) if df and df.value != "" else 0.0
 
                 if s_val is None:
                     continue
@@ -1601,7 +1741,6 @@ class SchedulerApp:
             if not steps:
                 return channel_targets
 
-            # 보간 계산
             cum = 0.0
             prev_sp = steps[0][0]
             target = steps[-1][0]
@@ -1649,17 +1788,13 @@ class SchedulerApp:
                     except Exception:
                         s_val = None
 
-                    try:
-                        d_val = float(df.value) if df and df.value != "" else 0.0
-                    except Exception:
-                        d_val = 0.0
+                    d_val = self._parse_duration_to_hours(df.value) if df and df.value != "" else 0.0
 
                     if s_val is None:
                         continue
 
                     steps.append((s_val, d_val))
 
-                # ✅ 스케줄이 없으면 UI Setpoint 사용
                 if not steps:
                     try:
                         ui_sp_field = self.channel_controls[ch_index]["sp_field"]
