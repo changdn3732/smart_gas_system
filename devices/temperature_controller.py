@@ -13,80 +13,69 @@ import random
 
 # ==================== 레지스터 주소 정의 ====================
 
-# 운전 모니터링 영역 (읽기)
+# GREEN Series 호환 주소 — 운전 모니터링 (읽기, FC03)
+# 매뉴얼 IM 05P07A01-01EN, Section 8.6.3 (D0001~D0100)
 MONITOR_REGISTERS = {
-    'PV': 0x0001,           # 현재 측정값
-    'SV': 0x0002,           # 설정값
-    'MV': 0x0003,           # 출력값 (%)
-    'DEV': 0x0004,          # 편차 (PV-SV)
-    'RUN_STATUS': 0x0005,   # 운전 상태
-    'ALARM_STATUS': 0x0006, # 알람 상태
-    'AT_STATUS': 0x0007,    # 오토튜닝 상태
+    'PV': 0x0002,           # D0003  PV_L1      현재 측정값
+    'SV': 0x0003,           # D0004  CSP_L1     현재 설정값
+    'MV': 0x0004,           # D0005  OUT_L1     출력값 (%)
+    'HOUT': 0x0005,         # D0006  H.OUT_L1   가열측 출력
+    'COUT': 0x0006,         # D0007  C.OUT_L1   냉각측 출력
+    'MODE': 0x0007,         # D0008  MOD_L1     운전 모드
+    'PID_NO': 0x0008,       # D0009  PID_L1     PID 번호
+    'CSPNO': 0x0009,        # D0010  CSPNO      현재 SP 그룹 번호
+    'ALM': 0x000A,          # D0011  ALM        알람 상태
 }
 
-# 제어 설정 영역 (읽기/쓰기)
+# GREEN Series 호환 주소 — 제어/운전 설정 (읽기/쓰기)
+# 매뉴얼 Section 8.6.4 (D0201~D0300), 8.6.5 (D0301~D0500)
 CONTROL_REGISTERS = {
-    'SV_SET': 0x0101,       # SV 설정
-    'RAMP_UP': 0x0102,      # 램프 상승속도
-    'RAMP_DOWN': 0x0103,    # 램프 하강속도
-    'OUT_HIGH': 0x0104,     # 출력 상한
-    'OUT_LOW': 0x0105,      # 출력 하한
-    'MANUAL_OUT': 0x0106,   # 수동 출력값 (MAN 모드)
+    'SV_SET': 0x012C,       # D0301  1.SP       SP_L1_1 그룹1 설정값 (쓰기)
+    'AUTO_MAN': 0x00C8,     # D0201  A/M        AUTO/MAN 전환
+    'STOP_RUN': 0x00CC,     # D0205  S/R        STOP/RUN 전환
+    'REM_LOCAL': 0x00D6,    # D0215  C.RSP 앞   REMOTE/LOCAL 전환
+    'C_RSP': 0x00D7,        # D0215  C.RSP      통신 리모트 SP
+    'MOUT': 0x00D9,         # D0217  MOUT       MAN모드 출력
+    'RAMP_UP': 0x00F4,      # D0245  UPR        램프 상승속도
+    'RAMP_DOWN': 0x00F5,    # D0246  DNR        램프 하강속도
+    'OUT_HIGH': 0x00FE,     # D0254  OH         출력 상한
+    'OUT_LOW': 0x00FF,      # D0255  OL         출력 하한
+    'AT': 0x00F0,           # D0241  AT         오토튜닝 시작
 }
 
-# PID 파라미터
+# GREEN Series 호환 주소 — PID (Section 8.6.5, D0301~)
 PID_REGISTERS = {
-    'P': 0x0201,            # 비례대
-    'I': 0x0202,            # 적분시간
-    'D': 0x0203,            # 미분시간
-    'HYSTERESIS': 0x0204,   # 히스테리시스
-    'DEADBAND': 0x0205,     # 데드밴드
+    'P': 0x0131,            # D0306  1.P   P_L1_1   비례대
+    'I': 0x0132,            # D0307  1.I   I_L1_1   적분시간
+    'D': 0x0133,            # D0308  1.D   D_L1_1   미분시간
+    'MR': 0x0136,           # D0311  1.MR  MR_L1_1  수동 리셋
 }
 
-# 알람 설정
+# GREEN Series 호환 주소 — 알람
 ALARM_REGISTERS = {
-    'ALARM1_TYPE': 0x0301,
-    'ALARM1_VALUE': 0x0302,
-    'ALARM2_TYPE': 0x0303,
-    'ALARM2_VALUE': 0x0304,
-    'ALARM3_TYPE': 0x0305,
-    'ALARM3_VALUE': 0x0306,
+    'ALARM1_TYPE': 0x0392,  # D0915  AL1   AL1.T_L1 (타입)
+    'ALARM2_TYPE': 0x0393,  # D0916  AL2   AL2.T_L1
+    'ALARM3_TYPE': 0x0394,  # D0917  AL3   AL3.T_L1
+    'ALARM1_VALUE': 0x00E6, # D0231  A1    A1_G (설정값)
+    'ALARM2_VALUE': 0x00E7, # D0232  A2    A2_G
+    'ALARM3_VALUE': 0x00E8, # D0233  A3    A3_G
+    'ALARM1_HY': 0x0396,    # D0919  HY1   HY1_L1 (히스테리시스)
+    'ALARM2_HY': 0x0397,    # D0920  HY2   HY2_L1
 }
 
-# 입력 설정
+# UTAdvanced 전용 주소 — 입력 설정 (D5101~, H=0x13EC~)
 INPUT_REGISTERS = {
-    'INPUT_TYPE': 0x0401,   # TC/RTD 등
-    'UNIT': 0x0402,         # ℃/℉
-    'DECIMAL': 0x0403,      # 소수점 위치
-    'FILTER': 0x0404,       # 필터 시간
-    'CORRECTION': 0x0405,   # 입력 보정값
+    'DECIMAL': 0x0404,      # 소수점 위치 (연결 초기 한 번 읽음, 실패 시 기본값 사용)
 }
 
-# 출력 설정
+# GREEN Series 호환 주소 — 기타
 OUTPUT_REGISTERS = {
-    'OUTPUT_TYPE': 0x0501,
-    'CONTROL_DIR': 0x0502,  # 정/역 방향
-    'CYCLE_TIME': 0x0503,
-    'SCALE_HIGH': 0x0504,
-    'SCALE_LOW': 0x0505,
+    'CONTROL_DIR': 0x0100,  # D0257  DR   DR_G  정/역 방향
+    'CYCLE_TIME': 0x03F4,   # D1013  RET  RTS   사이클 시간
 }
 
-# 통신 설정
-COMM_REGISTERS = {
-    'SLAVE_ID': 0x0601,
-    'BAUD_RATE': 0x0602,
-    'PARITY': 0x0603,
-    'STOP_BIT': 0x0604,
-    'DATA_LENGTH': 0x0605,
-}
-
-# 시스템 영역
-SYSTEM_REGISTERS = {
-    'MODEL_CODE': 0x0701,
-    'VERSION': 0x0702,
-    'INIT_SETTINGS': 0x0703,
-    'MODE_SWITCH': 0x0704,
-}
+COMM_REGISTERS = {}
+SYSTEM_REGISTERS = {}
 
 
 class ControlMode(Enum):
@@ -250,7 +239,7 @@ class UT32AController:
             result = self.client.read_holding_registers(
                 address=address,
                 count=1,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
             
             if result.isError():
@@ -271,7 +260,7 @@ class UT32AController:
             result = self.client.write_register(
                 address=address,
                 value=value,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
             
             if result.isError():
@@ -293,12 +282,18 @@ class UT32AController:
     
     def _read_decimal_point(self):
         """소수점 위치 읽기"""
-        decimal = self._read_register(INPUT_REGISTERS['DECIMAL'])
-        if decimal is not None:
-            self.data.decimal_point = decimal
-            # 스케일 팩터 계산 (0=x1, 1=x10, 2=x100)
-            self.scale_factor = 10 ** decimal
-            self.log(f"소수점 위치: {decimal} (스케일: {self.scale_factor})")
+        try:
+            decimal = self._read_register(INPUT_REGISTERS['DECIMAL'])
+            if decimal is not None:
+                self.data.decimal_point = decimal
+                self.scale_factor = 10 ** decimal
+                self.log(f"소수점 위치: {decimal} (스케일: {self.scale_factor})")
+            else:
+                self.log("소수점 읽기 실패 → 기본값 사용 (scale=10)")
+                self.scale_factor = 10.0
+        except Exception:
+            self.log("소수점 읽기 예외 → 기본값 사용 (scale=10)")
+            self.scale_factor = 10.0
     
     # ==================== 읽기 함수 ====================
     
@@ -330,25 +325,23 @@ class UT32AController:
         return None
     
     def read_deviation(self) -> Optional[float]:
-        """편차 읽기"""
-        raw = self._read_register(MONITOR_REGISTERS['DEV'])
-        if raw is not None:
-            value = self._convert_to_signed(raw) / self.scale_factor
-            self.data.deviation = value
-            return value
+        """편차 읽기 (PV - SV 계산)"""
+        if self.data.pv is not None and self.data.sv is not None:
+            self.data.deviation = round(self.data.pv - self.data.sv, 2)
+            return self.data.deviation
         return None
-    
-    def read_status(self) -> Optional[int]:
-        """운전 상태 읽기"""
-        status = self._read_register(MONITOR_REGISTERS['RUN_STATUS'])
-        if status is not None:
-            self.data.is_running = (status & 0x01) != 0
-            return status
+
+    def read_mode(self) -> Optional[int]:
+        """운전 모드 읽기"""
+        mode = self._read_register(MONITOR_REGISTERS['MODE'])
+        if mode is not None:
+            self.data.is_running = True
+            return mode
         return None
-    
+
     def read_alarm_status(self) -> Optional[int]:
         """알람 상태 읽기"""
-        alarm = self._read_register(MONITOR_REGISTERS['ALARM_STATUS'])
+        alarm = self._read_register(MONITOR_REGISTERS['ALM'])
         if alarm is not None:
             self.data.alarm_status = alarm
             return alarm
@@ -406,7 +399,7 @@ class UT32AController:
         self.read_sv()
         self.read_mv()
         self.read_deviation()
-        self.read_status()
+        self.read_mode()
         self.read_alarm_status()
 
         if self.on_data_update:
@@ -480,7 +473,7 @@ class UT32AController:
     def write_manual_output(self, output: float) -> bool:
         """수동 출력값 설정 (%)"""
         raw = int(output * 10)  # 0.1% 단위
-        success = self._write_register(CONTROL_REGISTERS['MANUAL_OUT'], raw)
+        success = self._write_register(CONTROL_REGISTERS['MOUT'], raw)
         if success:
             self.log(f"수동 출력: {output}%")
         return success
@@ -509,9 +502,8 @@ class UT32AController:
     
     def start_auto_tuning(self) -> bool:
         """오토튜닝 시작"""
-        # AT 시작 명령 (모델에 따라 다를 수 있음)
         self.log("오토튜닝 시작")
-        return self._write_register(SYSTEM_REGISTERS['MODE_SWITCH'], 0x0001)
+        return self._write_register(CONTROL_REGISTERS['AT'], 1)
     
     def get_alarm_string(self) -> str:
         """알람 상태 문자열"""
@@ -540,18 +532,23 @@ class TemperatureController:
     다중 UT32A 온도 컨트롤러 통합 관리
     - 여러 대의 UT32A를 하나의 RS-485 라인에서 관리
     """
-    
-    def __init__(self, port: str = 'COM8',
-                baudrate: int = 9600,
-                simulator: bool = False):
+
+    def __init__(self,
+                port: str = 'COM7',
+                baudrate: int = 19200,
+                simulator: bool = False,
+                client: Optional[ModbusSerialClient] = None):
 
         self.port = port
         self.baudrate = baudrate
         self.simulator = simulator
 
-        self.client: Optional[ModbusSerialClient] = None
+        self.client: Optional[ModbusSerialClient] = client
         self.connected = False
         self.controllers: Dict[int, UT32AController] = {}
+
+        # 🔥 외부 client 주입 여부 저장
+        self._shared_client = client is not None
 
         self.on_log: Optional[Callable] = None
         
@@ -577,56 +574,59 @@ class TemperatureController:
         return controller
     
     def connect(self) -> bool:
-        """모든 컨트롤러 연결"""
-#==================시뮬===============
+
+        # ================== 시뮬레이터 ==================
         if self.simulator:
             self.connected = True
             for controller in self.controllers.values():
                 controller.connect()
             self.log("Simulation Mode 전체 연결 완료")
             return True
-#===================진짜==============
+
         try:
-            self.client = ModbusSerialClient(
-                port=self.port,
-                baudrate=self.baudrate,
-                parity='N',
-                stopbits=1,
-                bytesize=8,
-                timeout=1
-            )
-            
-            if not self.client.connect():
-                self.log(f"Modbus 연결 실패: {self.port}")
-                return False
-            
+            # 🔥 외부 client가 없을 때만 생성
+            if not self.client:
+                self.client = ModbusSerialClient(
+                    port=self.port,
+                    baudrate=self.baudrate,
+                    parity='N',
+                    stopbits=1,
+                    bytesize=8,
+                    timeout=1
+                )
+
+                if not self.client.connect():
+                    self.log(f"Modbus 연결 실패: {self.port}")
+                    return False
+
             self.connected = True
-            self.log(f"Modbus 연결 성공: {self.port}")
-            
-            # 각 컨트롤러에 공유 클라이언트 전달
+            self.log("Modbus 연결 성공")
+
+            # 🔥 모든 slave에 공유 client 전달
             for controller in self.controllers.values():
                 controller._shared_client = True
                 controller.connect(self.client)
-            
+
             return True
-            
+
         except Exception as e:
             self.log(f"연결 오류: {e}")
             return False
     
     def disconnect(self):
-        """연결 해제"""
+
         for controller in self.controllers.values():
             controller.connected = False
             controller.data.connected = False
-        
-        if self.client:
+
+        # 🔥 공유 client면 닫지 않음
+        if self.client and not self._shared_client:
             self.client.close()
-            self.client = None
-        
+
+        self.client = None
         self.connected = False
         self.log("연결 해제됨")
-    
+
     def get_controller(self, slave_id: int) -> Optional[UT32AController]:
         """특정 컨트롤러 가져오기"""
         return self.controllers.get(slave_id)

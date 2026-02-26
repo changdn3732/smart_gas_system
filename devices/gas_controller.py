@@ -13,24 +13,21 @@ import time
 import random
 
 # ==================== 레지스터 주소 정의 ====================
+# New Firmware (10v07+) — Input Register로 읽기 (FC04)
 
 REGISTERS = {
-    # 실시간 출력용
-    'PRESSURE': 1354,           # float32 (2 registers)
-    'PRESSURE_UNIT': 1654,      # uint16
-    'PRESSURE_DECIMAL': 1655,   # uint16
-    
-    'TEMPERATURE': 1360,        # float32 (2 registers)
-    'TEMPERATURE_UNIT': 1660,   # uint16
-    'TEMPERATURE_DECIMAL': 1661, # uint16
-    
-    'SETPOINT': 1350,           # float32 (2 registers)
-    'SETPOINT_UNIT': 1650,      # uint16
-    'SETPOINT_DECIMAL': 1651,   # uint16
-    
-    # 제어용
-    'GAS_INDEX': 1083,          # uint16
-    'GAS_NAME': 1084,           # ASCII (16 registers)
+    # 읽기용 (Input Register, FC04)
+    'GAS_NUMBER': 1346,         # uint16 — 현재 가스 번호
+    'SETPOINT': 1349,           # float32 (2 registers)
+    'VALVE_DRIVE': 1351,        # float32
+    'PRESSURE': 1353,           # float32
+    'TEMPERATURE': 1359,        # float32
+    'VOLUMETRIC_FLOW': 1361,    # float32
+    'MASS_FLOW': 1363,          # float32
+
+    # 쓰기용 (Holding Register, FC06/16)
+    'GAS_SELECT': 1004,         # 가스 선택 쓰기 주소
+    'SETPOINT_WRITE': 1349,     # Setpoint 쓰기
 }
 
 # Alicat 가스 테이블 (ID, 약어, 전체 이름)
@@ -151,71 +148,72 @@ class GasDeviceReader:
         self.connected = False
         self.data.connected = False
     
-    # ==================== 읽기 함수 ====================
-    
-    def _read_float(self, address: int) -> Optional[float]:
-        """Holding Register에서 Float32 읽기 (Big Endian)"""
+    # ==================== 읽기 함수 (Input Register, FC04) ====================
+
+    def _read_float_input(self, address: int) -> Optional[float]:
+        """Input Register에서 Float32 읽기 (Big Endian)"""
         if not self.connected or not self.client:
             return None
-        
+
         try:
-            result = self.client.read_holding_registers(
+            result = self.client.read_input_registers(
                 address=address,
                 count=2,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
-            
+
             if result.isError():
                 return None
-            
-            # Big Endian 변환
+
             raw = struct.pack('>HH', result.registers[0], result.registers[1])
             return struct.unpack('>f', raw)[0]
-            
+
         except Exception as e:
-            self.log(f"Float 읽기 오류: {e}")
+            self.log(f"Float 읽기 오류 ({address}): {e}")
             return None
-    
-    def _read_uint16(self, address: int) -> Optional[int]:
-        """Holding Register에서 uint16 읽기"""
+
+    def _read_uint16_input(self, address: int) -> Optional[int]:
+        """Input Register에서 uint16 읽기"""
         if not self.connected or not self.client:
             return None
-        
+
         try:
-            result = self.client.read_holding_registers(
+            result = self.client.read_input_registers(
                 address=address,
                 count=1,
-                slave=self.slave_id
+                device_id=self.slave_id
             )
-            
+
             if result.isError():
                 return None
-            
+
             return result.registers[0]
-            
+
         except Exception as e:
-            self.log(f"uint16 읽기 오류: {e}")
+            self.log(f"uint16 읽기 오류 ({address}): {e}")
             return None
-    
+
     def read_pressure(self) -> Optional[float]:
-        """압력 읽기"""
-        return self._read_float(REGISTERS['PRESSURE'])
-    
+        return self._read_float_input(REGISTERS['PRESSURE'])
+
     def read_temperature(self) -> Optional[float]:
-        """온도 읽기"""
-        return self._read_float(REGISTERS['TEMPERATURE'])
-    
+        return self._read_float_input(REGISTERS['TEMPERATURE'])
+
     def read_setpoint(self) -> Optional[float]:
-        """Setpoint 읽기"""
         if self.device_type == DeviceType.BASIS:
-            return None  # BASIS는 Setpoint 없음
-        return self._read_float(REGISTERS['SETPOINT'])
-    
+            return None
+        return self._read_float_input(REGISTERS['SETPOINT'])
+
+    def read_mass_flow(self) -> Optional[float]:
+        return self._read_float_input(REGISTERS['MASS_FLOW'])
+
+    def read_valve_drive(self) -> Optional[float]:
+        return self._read_float_input(REGISTERS['VALVE_DRIVE'])
+
     def read_gas_index(self) -> Optional[int]:
-        """Gas 인덱스 읽기"""
         if self.device_type != DeviceType.MFC:
-            return None  # MFC만 지원
-        return self._read_uint16(REGISTERS['GAS_INDEX'])
+            return None
+        return self._read_uint16_input(REGISTERS['GAS_NUMBER'])
     
     def read_all(self) -> GasDeviceData:
         """모든 데이터 읽기"""
@@ -247,72 +245,63 @@ class GasDeviceReader:
         self.data.pressure = self.read_pressure() or 0.0
         self.data.temperature = self.read_temperature() or 0.0
         self.data.setpoint = self.read_setpoint() or 0.0
-        
+
         gas_idx = self.read_gas_index()
         if gas_idx is not None:
             self.data.gas_index = gas_idx
             self.data.gas_name = GAS_TABLE.get(gas_idx, f"Gas #{gas_idx}")
-        
-        pressure_unit = self._read_uint16(REGISTERS['PRESSURE_UNIT'])
-        if pressure_unit is not None:
-            self.data.pressure_unit = UNIT_CODES.get(pressure_unit, f"Unit {pressure_unit}")
-        
-        temp_unit = self._read_uint16(REGISTERS['TEMPERATURE_UNIT'])
-        if temp_unit is not None:
-            self.data.temperature_unit = UNIT_CODES.get(temp_unit, f"Unit {temp_unit}")
-        
-        sp_unit = self._read_uint16(REGISTERS['SETPOINT_UNIT'])
-        if sp_unit is not None:
-            self.data.setpoint_unit = UNIT_CODES.get(sp_unit, f"Unit {sp_unit}")
-        
+
+        self.data.connected = True
         return self.data
     # ==================== 쓰기 함수 ====================
-    
+    # no_response_expected=True: RS-232 RX 미연결 환경에서도 쓰기 가능
+
     def _write_float(self, address: int, value: float) -> bool:
         """Holding Register에 Float32 쓰기 (Big Endian)"""
-        if not self.connected or not self.client:
+        if not self.client:
+            self.log("쓰기 실패: client 없음")
             return False
-        
+        if not self.connected:
+            self.log("쓰기 실패: connected=False")
+            return False
+
         try:
             raw = struct.pack('>f', value)
-            registers = struct.unpack('>HH', raw)
-            
-            result = self.client.write_registers(
+            registers = list(struct.unpack('>HH', raw))
+
+            self.log(f"쓰기 시도: addr={address}, val={value}, "
+                     f"regs={registers}, device_id={self.slave_id}, "
+                     f"socket_open={self.client.connected}")
+
+            self.client.write_registers(
                 address=address,
-                values=list(registers),
-                slave=self.slave_id
+                values=registers,
+                device_id=self.slave_id,
+                no_response_expected=True,
             )
-            
-            if result.isError():
-                self.log(f"Float 쓰기 실패: {address}")
-                return False
-            
+            self.log(f"쓰기 완료: addr={address}, val={value}")
             return True
-            
+
         except Exception as e:
-            self.log(f"Float 쓰기 오류: {e}")
+            self.log(f"Float 쓰기 오류 ({address}): {e}")
             return False
-    
-    def _write_uint16(self, address: int, value: int) -> bool:
-        """Holding Register에 uint16 쓰기"""
+
+    def _write_multi_registers(self, address: int, values: list) -> bool:
+        """Holding Register에 다중 값 쓰기"""
         if not self.connected or not self.client:
             return False
-        
+
         try:
-            result = self.client.write_register(
+            self.client.write_registers(
                 address=address,
-                value=value,
-                slave=self.slave_id
+                values=values,
+                device_id=self.slave_id,
+                no_response_expected=True,
             )
-            
-            if result.isError():
-                self.log(f"uint16 쓰기 실패: {address}")
-                return False
-            
             return True
-            
+
         except Exception as e:
-            self.log(f"uint16 쓰기 오류: {e}")
+            self.log(f"Multi write 오류 ({address}): {e}")
             return False
     
     def write_setpoint(self, value: float) -> bool:
@@ -324,36 +313,37 @@ class GasDeviceReader:
         if self.device_type == DeviceType.BASIS:
             return False
 
-        success = self._write_float(REGISTERS['SETPOINT'], value)
+        success = self._write_float(REGISTERS['SETPOINT_WRITE'], value)
         if success:
             self.data.setpoint = value
         return success
-    
+
     def write_gas(self, gas_index: int) -> bool:
-        """Gas 변경 (MFC만)"""
+        """Gas 변경 (MFC만, 2-step: 1002에 1 → 1004에 gas_id)"""
         if self.device_type != DeviceType.MFC:
             self.log("MFC만 Gas 변경 지원")
             return False
-        
-        success = self._write_uint16(REGISTERS['GAS_INDEX'], gas_index)
-        if success:
-            gas_name = GAS_TABLE.get(gas_index, f"Gas #{gas_index}")
-            self.log(f"Gas → {gas_index} ({gas_name})")
-            self.data.gas_index = gas_index
-            self.data.gas_name = gas_name
-        return success
-    
-    def write_unit(self, unit_type: str, unit_code: int) -> bool:
-        """단위 변경"""
-        unit_registers = {
-            'setpoint': REGISTERS['SETPOINT_UNIT'],
-            'pressure': REGISTERS['PRESSURE_UNIT'],
-        }
-        
-        if unit_type not in unit_registers:
+
+        if not self.connected or not self.client:
             return False
-        
-        return self._write_uint16(unit_registers[unit_type], unit_code)
+
+        # Step 1: 주소 1002에 값 1 (가스 변경 활성화)
+        ok1 = self._write_multi_registers(1002, [1, 0])
+        if not ok1:
+            self.log("Gas enable (1002) 실패")
+            return False
+
+        # Step 2: 주소 1004에 gas_id
+        ok2 = self._write_multi_registers(REGISTERS['GAS_SELECT'], [gas_index, 0])
+        if not ok2:
+            self.log("Gas write (1004) 실패")
+            return False
+
+        gas_name = GAS_TABLE.get(gas_index, f"Gas #{gas_index}")
+        self.log(f"Gas → {gas_index} ({gas_name})")
+        self.data.gas_index = gas_index
+        self.data.gas_name = gas_name
+        return True
     
     def set_valve_open(self) -> bool:
         """밸브 열기 (Setpoint 최대값 설정)"""
@@ -368,127 +358,104 @@ class GasDeviceReader:
 
 class GasController:
     """
-    가스 장치 통합 컨트롤러
-    - Slave ID 5: MFC (Mass Flow Controller)
-    - Slave ID 6: BPR (Back Pressure Regulator)
+    4 Slave 독립 구조 가스 컨트롤러
     """
-    
-    def __init__(self, port: str = 'COM7', baudrate: int = 19200, simulator: bool = False):
+
+    def __init__(
+        self,
+        port: str = "COM7",
+        baudrate: int = 19200,
+        slave_ids=None,
+        simulator: bool = False,
+    ):
         self.port = port
         self.baudrate = baudrate
         self.simulator = simulator
-        
+
         self.client: Optional[ModbusSerialClient] = None
         self.connected = simulator
-        
-        self.mfc = GasDeviceReader(
-            slave_id=5,
-            device_type=DeviceType.MFC,
-            simulator=simulator
-        )
-        
-        self.bpr = GasDeviceReader(
-            slave_id=6,
-            device_type=DeviceType.BPR,
-            simulator=simulator
-        )
-        
-        self.devices = {
-            'mfc': self.mfc,
-            'bpr': self.bpr,
-        }
-        
-    def log(self, message: str):
-        """로그 출력"""
-        if self.on_log:
-            self.on_log(message)
-        print(f"[GasController] {message}")
-    
+
+        # 기본 slave 1~4
+        if slave_ids is None:
+            slave_ids = [1, 2, 3, 4]
+
+        self.devices: Dict[int, GasDeviceReader] = {}
+
+        for sid in slave_ids:
+            self.devices[sid] = GasDeviceReader(
+                slave_id=sid,
+                device_type=DeviceType.MFC,
+                simulator=simulator,
+            )
+
+    # ---------------- 연결 ----------------
+
     def connect(self) -> bool:
-        """모든 장치 연결"""
-    # ================== 시뮬레이션 모드 ==================
         if self.simulator:
             self.connected = True
-            self.log("Simulation Mode 연결 완료")
+            print("Simulation Mode 연결 완료")
             return True
-        
-        
-    # ================== 실제 장비 모드 ==================
+
         try:
             self.client = ModbusSerialClient(
                 port=self.port,
                 baudrate=self.baudrate,
-                parity='N',
+                parity="N",
                 stopbits=1,
                 bytesize=8,
-                timeout=1
+                timeout=1,
             )
-            
+
             if not self.client.connect():
-                self.log(f"Modbus 연결 실패: {self.port}")
+                print("Modbus 연결 실패")
                 return False
-            
+
             self.connected = True
-            self.log(f"Modbus 연결 성공: {self.port}")
-            
-            # 장치에 공유 클라이언트 전달
-            self.mfc.connect(self.client)
-            self.bpr.connect(self.client)
-            
+            print("Modbus 연결 성공")
+
+            # 각 slave 연결 확인
+            for sid, dev in self.devices.items():
+                dev.connect(self.client)
+
             return True
-            
+
         except Exception as e:
-            self.log(f"연결 오류: {e}")
+            print("연결 오류:", e)
             return False
-    
+
     def disconnect(self):
-        """연결 해제"""
-        self.mfc.disconnect()
-        self.bpr.disconnect()
-        
+        for dev in self.devices.values():
+            dev.disconnect()
+
         if self.client:
             self.client.close()
             self.client = None
-        
+
         self.connected = False
-        self.log("연결 해제됨")
-    
-    def read_all_devices(self) -> Dict[str, GasDeviceData]:
-        """모든 장치 데이터 읽기"""
+        print("연결 해제")
+
+    # ---------------- 데이터 ----------------
+
+    def read_all_devices(self) -> Dict[int, GasDeviceData]:
         result = {}
-        for device_id, device in self.devices.items():
-            result[device_id] = device.read_all()
+        for sid, device in self.devices.items():
+            result[sid] = device.read_all()
         return result
-    
-    def get_device(self, device_id: str) -> Optional[GasDeviceReader]:
-        """장치 인스턴스 가져오기"""
-        return self.devices.get(device_id)
-    
-    def set_valve(self, device_id: str, is_open: bool) -> bool:
-        """밸브 열기/닫기"""
-        device = self.get_device(device_id)
-        if not device:
-            return False
-        
-        if is_open:
-            return device.set_valve_open()
-        else:
-            return device.set_valve_close()
-    
-    def write_setpoint(self, device_id: str, value: float) -> bool:
-        """Setpoint 쓰기"""
-        device = self.get_device(device_id)
+
+    def get_device(self, slave_id: int) -> Optional[GasDeviceReader]:
+        return self.devices.get(slave_id)
+
+    def write_setpoint(self, slave_id: int, value: float) -> bool:
+        device = self.get_device(slave_id)
         if not device:
             return False
         return device.write_setpoint(value)
-    
-    def write_gas(self, device_id: str, gas_index: int) -> bool:
-        """Gas 변경"""
-        device = self.get_device(device_id)
+
+    def write_gas(self, slave_id: int, gas_index: int) -> bool:
+        device = self.get_device(slave_id)
         if not device:
             return False
         return device.write_gas(gas_index)
-
 
 # ==================== 테스트 ====================
 

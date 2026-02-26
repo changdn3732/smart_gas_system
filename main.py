@@ -21,9 +21,9 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from simulators.alicat_controller import AlicatController
 from devices.device_service import DeviceService
 from data.data_service import DataService
+from devices.gas_controller import ALICAT_GAS_LIST, GAS_TABLE
 
 class SchedulerApp:
     class _SquareButton:
@@ -56,9 +56,37 @@ class SchedulerApp:
             except Exception:
                 pass
     
+    def _emergency_stop(self):
+        try:
+            for i in range(4):
+                self.device_service.set_gas(i, 1, 0.0)
+
+            self.conn_status.value = "Emergency Stop (All Gas = 0)"
+            self.conn_status.color = "red"
+
+            self.page.update()
+
+        except Exception as ex:
+            print("emergency error:", ex)
+
     def _on_gas_type_change(self, ch: int, gas: str):
         self.channel_gases[ch] = gas
         print(f"CH{ch+1} Gas changed to {gas}")
+
+    def _apply_gas_types(self):
+        if not self.device_service:
+            self.device_service = DeviceService()
+        for ch in range(4):
+            gas_name = self.channel_gases[ch]
+            gas_index = self.gas_name_to_index.get(gas_name)
+            if gas_index is None:
+                print(f"CH{ch+1}: unknown gas '{gas_name}'")
+                continue
+            try:
+                ok = self.device_service.write_gas_type(ch, gas_index)
+                print(f"CH{ch+1} gas type → {gas_name} (index {gas_index}): {'OK' if ok else 'FAIL'}")
+            except Exception as ex:
+                print(f"CH{ch+1} gas type 전송 오류: {ex}")
 
     def _toggle_mixing_channel(self, ch: int):
         # 선택 상태 토글
@@ -118,26 +146,22 @@ class SchedulerApp:
         self.selected_gas_channel = 0   # 기본 CH1 선택
         # state
         self.schedule_mode = "temp"  # 'temp' or 'gas'
-        # initialize 8 temp steps
+        # initialize 8 temp steps + enable state
         self.temp_steps = [
             {"temp_field": None, "dur_field": None, "rate_text": None} for _ in range(8)
         ]
+        self.temp_step_enabled = [True, True, True, True, False, False, False, False]
         # gas control state
         self.control_mode = "Mixing Mode"
         self.selected_gas_channel = 0
         self.active_gas_channel = None
         # build UI
         self.schedule_panel = self._build_schedule_panel()
-        self.available_gases = [
-            "N2",
-            "O2",
-            "Ar",
-            "H2",
-            "He",
-            "Air"
-        ]
-
+        self.available_gases = [g[1] for g in ALICAT_GAS_LIST]
+        self.gas_name_to_index = {g[1]: g[0] for g in ALICAT_GAS_LIST}
+        self.device_service = None
         self.channel_gases = ["N2", "N2", "N2", "N2"]
+        self.gas_type_dropdowns = [None, None, None, None]
         # Prepare in-memory history for 4 channels (keep up to 600 samples)
         self.history = {i: deque([0.0] * 600, maxlen=600) for i in range(4)}
         # single measured series that will approximate the schedule (keep up to 600 samples)
@@ -146,10 +170,14 @@ class SchedulerApp:
         self.gas_steps = [
             [{"setpoint": None, "dur_field": None, "rate_text": None} for _ in range(8)] for _ in range(4)
         ]
+        self.gas_step_enabled = [
+            [True, True, True, True, False, False, False, False] for _ in range(4)
+        ]
         # Mixing mode용 공통 스케줄
         self.mixing_steps = [
             {"setpoint": None, "dur_field": None} for _ in range(8)
         ]
+        self.mixing_step_enabled = [True, True, True, True, False, False, False, False]
 
         # Mixing mode 채널 선택 상태
         self.mixing_selected = [False, False, False, False]  # 기본 선택 안함
@@ -193,10 +221,10 @@ class SchedulerApp:
             # fallback: schedule via asyncio
             asyncio.get_event_loop().create_task(self._trend_loop_async())
 
-        # layout: left 60% (expand=6), right 40% (expand=4)
+        # layout: left 50% (expand=5), right 50% (expand=5)
         layout = ft.Row([
-            ft.Container(content=self.schedule_panel, expand=6, padding=12),
-            ft.Container(width=20),
+            ft.Container(content=self.schedule_panel, expand=5, padding=12),
+            ft.Container(width=12),
             ft.Container(content=ft.Column([
                 ft.Text("Real-time Trends", size=16, weight=ft.FontWeight.BOLD),
                 self.trend_placeholder,
@@ -210,7 +238,7 @@ class SchedulerApp:
                     ft.Container(width=24),
                     self.trend_run_button.control,
                 ], alignment=ft.MainAxisAlignment.CENTER),
-            ]), expand=4, padding=12),
+            ]), expand=5, padding=12),
         ], expand=True)
 
         page.add(layout)
@@ -267,190 +295,253 @@ class SchedulerApp:
                 v = targets[i] if targets and i < len(targets) and targets[i] is not None else 0.0
                 self.history[i] = deque([v] * self.history[i].maxlen, maxlen=self.history[i].maxlen)
 
+    def _make_table_cell(self, content, w=80, h=34, bg="#ffffff", header=False,
+                         border_top=True, border_bottom=True, border_left=True, border_right=True):
+        sides = ft.BorderSide(1, "#b0b0b0")
+        none_side = ft.BorderSide(0, "transparent")
+        border = ft.Border(
+            top=sides if border_top else none_side,
+            bottom=sides if border_bottom else none_side,
+            left=sides if border_left else none_side,
+            right=sides if border_right else none_side,
+        )
+        if isinstance(content, str):
+            content = ft.Text(content, size=11,
+                              weight=ft.FontWeight.BOLD if header else None,
+                              text_align=ft.TextAlign.CENTER)
+        return ft.Container(content=content, width=w, height=h,
+                            bgcolor=bg, border=border,
+                            alignment=ft.Alignment(0, 0), padding=0)
+
+    def _make_table_input(self, value="0.0", w=80, h=34, on_change=None):
+        tf = ft.TextField(value=value, width=w - 6, height=h - 4,
+                          text_size=12, text_align=ft.TextAlign.CENTER,
+                          content_padding=ft.padding.symmetric(horizontal=2, vertical=2),
+                          border_color="transparent", on_change=on_change)
+        return tf
+
+    def _build_table(self, headers, data_rows, col_widths, row_height=34):
+        """Build an Excel-style table with proper borders and center alignment."""
+        H_BG = "#e8eef4"
+        L_BG = "#f0f4f8"
+        n_cols = len(headers)
+        n_rows = len(data_rows)
+
+        def cell_borders(r, c, total_r):
+            return dict(
+                border_top=(r == 0),
+                border_bottom=True,
+                border_left=(c == 0),
+                border_right=True,
+            )
+
+        header_cells = []
+        for c, hdr in enumerate(headers):
+            header_cells.append(self._make_table_cell(
+                hdr, w=col_widths[c], h=row_height, bg=H_BG, header=True,
+                **cell_borders(0, c, n_rows + 1)))
+        rows = [ft.Row(header_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER)]
+
+        for r, row_data in enumerate(data_rows):
+            row_cells = []
+            for c, cell_content in enumerate(row_data):
+                is_label = (c == 0)
+                bg = L_BG if is_label else "#ffffff"
+                row_cells.append(self._make_table_cell(
+                    cell_content, w=col_widths[c], h=row_height,
+                    bg=bg, header=is_label,
+                    **cell_borders(r + 1, c, n_rows + 1)))
+            rows.append(ft.Row(row_cells, spacing=0, alignment=ft.MainAxisAlignment.CENTER))
+
+        return ft.Container(
+            content=ft.Column(rows, spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            border=ft.Border.all(2, "#666666"), border_radius=4,
+        )
+
+    def _toggle_temp_step(self, idx):
+        self.temp_step_enabled[idx] = not self.temp_step_enabled[idx]
+        self._render_schedule_content()
+        self.page.update()
+
+    def _toggle_mixing_step(self, idx):
+        self.mixing_step_enabled[idx] = not self.mixing_step_enabled[idx]
+        self._render_schedule_content()
+        self.page.update()
+
+    def _toggle_gas_step(self, ch, idx):
+        self.gas_step_enabled[ch][idx] = not self.gas_step_enabled[ch][idx]
+        self._render_schedule_content()
+        self.page.update()
+
+    def _make_step_toggle(self, label, enabled, on_click):
+        bg = "#003366" if enabled else "#dddddd"
+        fg = "#ffffff" if enabled else "#888888"
+        return ft.Container(
+            content=ft.Text(label, size=10, weight=ft.FontWeight.BOLD,
+                            color=fg, text_align=ft.TextAlign.CENTER),
+            width=46, height=28, bgcolor=bg, border_radius=4,
+            alignment=ft.Alignment(0, 0),
+            on_click=on_click,
+        )
+
     def _render_schedule_content(self):
         self.schedule_content.controls.clear()
+        C_W = 90
+        C_H = 34
+
         if self.schedule_mode == "temp":
-            self.schedule_content.controls.append(ft.Text("Temperature Scheduling", size=14, weight=ft.FontWeight.BOLD))
-            rows = []
+            self.schedule_content.controls.append(
+                ft.Text("Temperature Scheduling", size=14, weight=ft.FontWeight.BOLD))
+
             for i in range(8):
-                step_idx = i + 1
                 if not self.temp_steps[i]["temp_field"]:
-                    tf = ft.TextField(label=f"Step {step_idx} Temp (°C)", width=140, value="25.0",
-                                      on_change=lambda e, idx=i: self._on_temp_or_dur_change(idx))
-                    df = ft.TextField(label="Duration (hours)", width=140, value="0.5",
-                                      on_change=lambda e, idx=i: self._on_temp_or_dur_change(idx))
-                    rate = ft.Text("Rate: -", size=11)
-                    self.temp_steps[i]["temp_field"] = tf
-                    self.temp_steps[i]["dur_field"] = df
-                    self.temp_steps[i]["rate_text"] = rate
-                else:
-                    tf = self.temp_steps[i]["temp_field"]
-                    df = self.temp_steps[i]["dur_field"]
-                    rate = self.temp_steps[i]["rate_text"]
+                    self.temp_steps[i]["temp_field"] = self._make_table_input(
+                        "25.0", w=C_W, h=C_H,
+                        on_change=lambda e, idx=i: self._on_temp_or_dur_change(idx))
+                    self.temp_steps[i]["dur_field"] = self._make_table_input(
+                        "0.5", w=C_W, h=C_H,
+                        on_change=lambda e, idx=i: self._on_temp_or_dur_change(idx))
+                    self.temp_steps[i]["rate_text"] = ft.Text(
+                        "-", size=10, text_align=ft.TextAlign.CENTER)
 
-                rows.append(ft.Row([
-                    ft.Text(f"Step {step_idx}", width=60),
-                    tf,
-                    ft.Container(width=8),
-                    df,
-                    ft.Container(width=8),
-                    rate,
-                ], alignment=ft.MainAxisAlignment.START))
+            data_rows = []
+            for i in range(8):
+                toggle = self._make_step_toggle(
+                    f"S{i+1}", self.temp_step_enabled[i],
+                    lambda e, idx=i: self._toggle_temp_step(idx))
+                data_rows.append([
+                    toggle,
+                    self.temp_steps[i]["temp_field"],
+                    self.temp_steps[i]["dur_field"],
+                    self.temp_steps[i]["rate_text"],
+                ])
 
-            self.schedule_content.controls.extend(rows)
+            table = self._build_table(
+                headers=["Step", "Temp (°C)", "Duration (h)", "Rate (°/h)"],
+                data_rows=data_rows,
+                col_widths=[50, C_W, C_W, C_W],
+                row_height=C_H,
+            )
+            self.schedule_content.controls.append(
+                ft.Row([table], alignment=ft.MainAxisAlignment.CENTER))
             self._recompute_temp_rates()
+
             btn_apply = self._make_sq_button("Apply Temp Schedule", on_click=lambda e: print("Apply temp schedule"))
             btn_start = self._make_sq_button("Start Schedule", on_click=lambda e: print("Start temp schedule"))
             self.schedule_content.controls.append(ft.Row([
-                btn_apply.control,
-                ft.Container(width=12),
-                btn_start.control,
-            ]))
+                btn_apply.control, ft.Container(width=12), btn_start.control,
+            ], alignment=ft.MainAxisAlignment.CENTER))
 
         else:
-            # -----------------------------
-            # 🔝 Gas Control Mode
-            # -----------------------------
             self.schedule_content.controls.append(
-                ft.Text("Gas Control Mode", size=14, weight=ft.FontWeight.BOLD)
-            )
+                ft.Text("Gas Control Mode", size=14, weight=ft.FontWeight.BOLD))
 
             mode_row = ft.Row([
-                self._make_sq_button(
-                    "Mixing Mode",
+                self._make_sq_button("Mixing Mode",
                     on_click=lambda e: self._set_control_mode("Mixing Mode"),
-                    bgcolor="#003366" if self.control_mode == "Mixing Mode" else "#cccccc"
-                ).control,
+                    bgcolor="#003366" if self.control_mode == "Mixing Mode" else "#cccccc").control,
                 ft.Container(width=10),
-                self._make_sq_button(
-                    "Manual Mode",
+                self._make_sq_button("Manual Mode",
                     on_click=lambda e: self._set_control_mode("Manual Mode"),
-                    bgcolor="#003366" if self.control_mode == "Manual Mode" else "#cccccc"
-                ).control,
-            ])
-
+                    bgcolor="#003366" if self.control_mode == "Manual Mode" else "#cccccc").control,
+            ], alignment=ft.MainAxisAlignment.CENTER)
             self.schedule_content.controls.append(mode_row)
             self.schedule_content.controls.append(ft.Divider())
 
-            # ==========================================================
-            # 🔷 MIXING MODE
-            # ==========================================================
+            gas_config_row = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=6)
+            for ch in range(4):
+                if self.gas_type_dropdowns[ch] is None:
+                    self.gas_type_dropdowns[ch] = ft.Dropdown(
+                        width=110,
+                        value=self.channel_gases[ch],
+                        options=[ft.DropdownOption(g) for g in self.available_gases],
+                        on_select=lambda e, c=ch: self._on_gas_type_change(c, e.control.value),
+                        text_size=12,
+                        dense=True,
+                    )
+                else:
+                    self.gas_type_dropdowns[ch].value = self.channel_gases[ch]
+                gas_config_row.controls.append(
+                    ft.Column([
+                        ft.Text(f"CH{ch+1}", size=11, weight=ft.FontWeight.BOLD,
+                                text_align=ft.TextAlign.CENTER),
+                        self.gas_type_dropdowns[ch],
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2)
+                )
+            apply_gas_btn = self._make_sq_button(
+                "Apply", on_click=lambda e: self._apply_gas_types(), width=70)
+            gas_config_row.controls.append(apply_gas_btn.control)
+            self.schedule_content.controls.append(gas_config_row)
+            self.schedule_content.controls.append(ft.Divider())
+
             if self.control_mode == "Mixing Mode":
-
-                # 🔘 다중 선택 버튼
-                ch_row = ft.Row()
-
+                ch_row = ft.Row(alignment=ft.MainAxisAlignment.CENTER)
                 for ch in range(4):
-                    selected = self.mixing_selected[ch]
-
-                    btn = self._make_sq_button(
-                        f"CH{ch+1}",
+                    btn = self._make_sq_button(f"CH{ch+1}",
                         on_click=lambda e, c=ch: self._toggle_mixing_channel(c),
-                        bgcolor="#003366" if selected else "#cccccc"
-                    )
-
+                        bgcolor="#003366" if self.mixing_selected[ch] else "#cccccc")
                     ch_row.controls.append(btn.control)
                     ch_row.controls.append(ft.Container(width=10))
-
                 self.schedule_content.controls.append(ch_row)
                 self.schedule_content.controls.append(ft.Divider())
 
-                # 📋 공통 스케줄 표시
-                self.schedule_content.controls.append(
-                    ft.Text("Common Mixing Schedule (Step 1~8)", weight=ft.FontWeight.BOLD)
-                )
-
                 for step in range(8):
-
                     slot = self.mixing_steps[step]
-
                     if not slot["setpoint"]:
-                        sp_field = ft.TextField(
-                            label=f"Step {step+1} SP",
-                            width=140,
-                            value="0.0"
-                        )
+                        slot["setpoint"] = self._make_table_input("0.0", w=C_W, h=C_H)
+                        slot["dur_field"] = self._make_table_input("0.5", w=C_W, h=C_H)
 
-                        dur_field = ft.TextField(
-                            label="Duration (h)",
-                            width=140,
-                            value="0.5"
-                        )
+                data_rows = []
+                for step in range(8):
+                    slot = self.mixing_steps[step]
+                    toggle = self._make_step_toggle(
+                        f"S{step+1}", self.mixing_step_enabled[step],
+                        lambda e, idx=step: self._toggle_mixing_step(idx))
+                    data_rows.append([toggle, slot["setpoint"], slot["dur_field"]])
 
-                        slot["setpoint"] = sp_field
-                        slot["dur_field"] = dur_field
-                    else:
-                        sp_field = slot["setpoint"]
-                        dur_field = slot["dur_field"]
+                table = self._build_table(
+                    headers=["Step", "SP (sccm)", "Duration (h)"],
+                    data_rows=data_rows,
+                    col_widths=[50, C_W, C_W],
+                    row_height=C_H,
+                )
+                self.schedule_content.controls.append(
+                    ft.Row([table], alignment=ft.MainAxisAlignment.CENTER))
 
-                    self.schedule_content.controls.append(
-                        ft.Row([
-                            ft.Text(f"S{step+1}", width=50),
-                            sp_field,
-                            ft.Container(width=10),
-                            dur_field
-                        ])
-                    )
-
-            # ==========================================================
-            # 🔷 MANUAL MODE
-            # ==========================================================
             else:
-
-                # 🔘 단일 선택 버튼
-                ch_row = ft.Row()
-
+                ch_row = ft.Row(alignment=ft.MainAxisAlignment.CENTER)
                 for ch in range(4):
-                    btn = self._make_sq_button(
-                        f"CH{ch+1}",
+                    btn = self._make_sq_button(f"CH{ch+1}",
                         on_click=lambda e, c=ch: self._select_gas_schedule_channel(c),
-                        bgcolor="#003366" if self.selected_gas_channel == ch else "#cccccc"
-                    )
-
+                        bgcolor="#003366" if self.selected_gas_channel == ch else "#cccccc")
                     ch_row.controls.append(btn.control)
                     ch_row.controls.append(ft.Container(width=10))
-
                 self.schedule_content.controls.append(ch_row)
                 self.schedule_content.controls.append(ft.Divider())
 
-                # 📋 선택 채널 스케줄 표시
                 ch = self.selected_gas_channel
-
-                self.schedule_content.controls.append(
-                    ft.Text(f"CH{ch+1} Schedule (Step 1~8)", weight=ft.FontWeight.BOLD)
-                )
-
                 for step in range(8):
-
                     slot = self.gas_steps[ch][step]
-
                     if not slot["setpoint"]:
-                        sp_field = ft.TextField(
-                            label=f"Step {step+1} SP",
-                            width=140,
-                            value="0.0"
-                        )
+                        slot["setpoint"] = self._make_table_input("0.0", w=C_W, h=C_H)
+                        slot["dur_field"] = self._make_table_input("0.5", w=C_W, h=C_H)
 
-                        dur_field = ft.TextField(
-                            label="Duration (h)",
-                            width=140,
-                            value="0.5"
-                        )
+                data_rows = []
+                for step in range(8):
+                    slot = self.gas_steps[ch][step]
+                    toggle = self._make_step_toggle(
+                        f"S{step+1}", self.gas_step_enabled[ch][step],
+                        lambda e, c=ch, idx=step: self._toggle_gas_step(c, idx))
+                    data_rows.append([toggle, slot["setpoint"], slot["dur_field"]])
 
-                        slot["setpoint"] = sp_field
-                        slot["dur_field"] = dur_field
-                    else:
-                        sp_field = slot["setpoint"]
-                        dur_field = slot["dur_field"]
-
-                    self.schedule_content.controls.append(
-                        ft.Row([
-                            ft.Text(f"S{step+1}", width=50),
-                            sp_field,
-                            ft.Container(width=10),
-                            dur_field
-                        ])
-                    )               
+                table = self._build_table(
+                    headers=["Step", "SP (sccm)", "Duration (h)"],
+                    data_rows=data_rows,
+                    col_widths=[50, C_W, C_W],
+                    row_height=C_H,
+                )
+                self.schedule_content.controls.append(
+                    ft.Row([table], alignment=ft.MainAxisAlignment.CENTER))               
     def _on_temp_or_dur_change(self, idx: int):
                     try:
                         self._recompute_temp_rates()
@@ -461,65 +552,135 @@ class SchedulerApp:
 
 
 
+    def _build_device_indicator(self, label):
+        icon = ft.Icon(ft.Icons.CIRCLE, size=14, color="red")
+        text = ft.Text(label, size=13, width=160)
+        status_text = ft.Text("Not checked", size=12, color="#999999")
+        return icon, text, status_text
+
     def _open_settings(self, e):
-        # create settings view if not present
         try:
             if not hasattr(self, "settings_view"):
-                # device connection controls
                 self.conn_status = ft.Text("Not connected", color="red")
-                # device type selector: Simulator or Serial
-                self.device_type = ft.Dropdown(options=[ft.dropdown.Option("Simulator"), ft.dropdown.Option("Serial")], value="Simulator", width=180)
-                self.port_field = ft.TextField(label="Serial Port", value="COM3", width=160)
-                self.baud_field = ft.TextField(label="Baudrate", value="9600", width=120)
-                # device id mapping fields
-                self.ut32a_id_field = ft.TextField(label="UT32A Slave ID", value="1", width=120)
-                self.alicat_start_id_field = ft.TextField(label="Alicat Start ID", value="2", width=120)
+                self.device_type = ft.Dropdown(options=[ft.DropdownOption("Simulator"), ft.DropdownOption("Serial")], value="Simulator", width=180)
+
+                # Temp (RS-485) 포트 설정
+                self.temp_port_field = ft.TextField(label="Temp Port (RS-485)", value="COM7", width=160)
+                self.temp_baud_field = ft.TextField(label="Baud", value="19200", width=100)
+
+                # Gas (RS-232) 포트 설정
+                self.gas_port_field = ft.TextField(label="Gas Port (RS-232)", value="COM5", width=160)
+                self.gas_baud_field = ft.TextField(label="Baud", value="19200", width=100)
+
                 connect_btn = self._make_sq_button("Connect Device", on_click=lambda ev: self._toggle_connection())
 
+                # 개별 장치 상태 인디케이터 (UT32A x1 + Gas x4)
+                device_labels = [
+                    "UT32A  (ID: 1, Temp)",
+                    "Gas CH1 (ID: 2, MFC)",
+                    "Gas CH2 (ID: 3, MFC)",
+                    "Gas CH3 (ID: 4, MFC)",
+                    "Gas CH4 (ID: 5, MFC)",
+                ]
+                self.dev_icons = []
+                self.dev_status_texts = []
+                status_rows = []
 
-                # =========================
-                # 🔥 Gas Configuration Section
-                # =========================
+                for label in device_labels:
+                    icon, name_text, status_text = self._build_device_indicator(label)
+                    self.dev_icons.append(icon)
+                    self.dev_status_texts.append(status_text)
+                    status_rows.append(
+                        ft.Row([icon, name_text, status_text], spacing=8)
+                    )
 
+                status_section = ft.Container(
+                    content=ft.Column(
+                        [ft.Text("Device Status", size=14, weight=ft.FontWeight.BOLD)]
+                        + status_rows,
+                        spacing=6,
+                    ),
+                    padding=ft.padding.all(12),
+                    bgcolor="#f9f9f9",
+                    border_radius=8,
+                    border=ft.Border.all(1, "#e0e0e0"),
+                )
+
+                # Setpoint 직접 전송
+                self.sp_input_fields = []
+                self.sp_result_texts = []
+                sp_rows = []
+                for ch in range(4):
+                    sp_inp = ft.TextField(
+                        label=f"CH{ch+1} Setpoint", width=140,
+                        value="0.0", text_size=14,
+                        input_filter=ft.InputFilter(regex_string=r"[0-9.\-]", allow=True),
+                    )
+                    sp_result = ft.Text("", size=12, color="#999999")
+                    send_btn = ft.ElevatedButton(
+                        f"Send",
+                        on_click=lambda _, c=ch: self._send_setpoint_from_settings(c),
+                        height=36,
+                    )
+                    self.sp_input_fields.append(sp_inp)
+                    self.sp_result_texts.append(sp_result)
+                    sp_rows.append(ft.Row([
+                        ft.Text(f"Gas CH{ch+1}", width=70, weight=ft.FontWeight.W_500),
+                        sp_inp, send_btn, sp_result,
+                    ], spacing=8))
+
+                setpoint_section = ft.Container(
+                    content=ft.Column(
+                        [ft.Text("Setpoint Control", size=14, weight=ft.FontWeight.BOLD)]
+                        + sp_rows,
+                        spacing=8,
+                    ),
+                    padding=ft.padding.all(12),
+                    bgcolor="#f9f9f9",
+                    border_radius=8,
+                    border=ft.Border.all(1, "#e0e0e0"),
+                )
+
+                # Gas Configuration
                 gas_config_section = ft.Column(
-                    [
-                        ft.Text("Gas Configuration", size=14, weight=ft.FontWeight.BOLD),
-                        ft.Divider(),
-                    ],
+                    [ft.Text("Gas Configuration", size=14, weight=ft.FontWeight.BOLD), ft.Divider()],
                     spacing=8,
                 )
 
                 for ch in range(4):
-
                     dropdown = ft.Dropdown(
                         width=200,
                         value=self.channel_gases[ch],
-                        options=[ft.dropdown.Option(g) for g in self.available_gases],
+                        options=[ft.DropdownOption(g) for g in self.available_gases],
+                        on_select=lambda e, c=ch: self._on_gas_type_change(c, e.control.value),
                     )
+                    gas_config_section.controls.append(ft.Row([ft.Text(f"CH{ch+1}", width=60), dropdown]))
 
-                    dropdown.on_change = lambda e, c=ch: self._on_gas_type_change(c, e.control.value)
-
-                    gas_config_section.controls.append(
-                        ft.Row([
-                            ft.Text(f"CH{ch+1}", width=60),
-                            dropdown
-                        ])
-                    )
+                port_section = ft.Column([
+                    ft.Text("Port Configuration", size=14, weight=ft.FontWeight.BOLD),
+                    ft.Row([
+                        ft.Text("Device Type:"), self.device_type,
+                    ]),
+                    ft.Row([
+                        self.temp_port_field, ft.Container(width=8), self.temp_baud_field,
+                        ft.Container(width=20),
+                        self.gas_port_field, ft.Container(width=8), self.gas_baud_field,
+                    ]),
+                ], spacing=8)
 
                 self.settings_view = ft.View(route="/settings", controls=[
                     ft.AppBar(title=ft.Text("Settings"), bgcolor="#ffffff", leading=ft.TextButton("Back", on_click=self._close_settings)),
                     ft.Container(content=ft.Column([
-                        ft.Text("Device Connection", size=14, weight=ft.FontWeight.BOLD),
-                        ft.Row([ft.Text("Device Type:"), self.device_type, ft.Container(width=12), ft.Text("Port:"), self.port_field, ft.Container(width=12), ft.Text("Baud:"), self.baud_field]),
-                        ft.Row([ft.Text("UT32A ID:"), self.ut32a_id_field, ft.Container(width=12), ft.Text("Alicat Start ID:"), self.alicat_start_id_field]),
+                        port_section,
                         self.conn_status,
                         connect_btn.control,
                         ft.Divider(height=12),
-                        gas_config_section,
+                        status_section,
                         ft.Divider(height=12),
-                        ft.Text("Connection Status:", size=12),
-                        ft.Text("Placeholder: All devices nominal", color="#080"),
-                    ], spacing=12), padding=12)
+                        setpoint_section,
+                        ft.Divider(height=12),
+                        gas_config_section,
+                    ], spacing=12, scroll=ft.ScrollMode.AUTO), padding=12)
                 ])
 
             # push and navigate
@@ -545,118 +706,141 @@ class SchedulerApp:
         except Exception:
             pass
 
+    def _update_device_indicator(self, index, connected, write_only=False):
+        if not hasattr(self, "dev_icons"):
+            return
+        if connected and write_only:
+            self.dev_icons[index].color = "#FF9800"
+            self.dev_status_texts[index].value = "Write-only (RX?)"
+            self.dev_status_texts[index].color = "#FF9800"
+        elif connected:
+            self.dev_icons[index].color = "#4CAF50"
+            self.dev_status_texts[index].value = "Connected"
+            self.dev_status_texts[index].color = "#4CAF50"
+        else:
+            self.dev_icons[index].color = "#F44336"
+            self.dev_status_texts[index].value = "No response"
+            self.dev_status_texts[index].color = "#F44336"
+
     def _toggle_connection(self, e=None):
-        # attempt to connect/disconnect based on selected device type
         try:
-            if getattr(self, 'device', None) is None:
-                # connect
-                    dtype = self.device_type.value if hasattr(self, 'device_type') else 'Simulator'
-                    # read id mappings
-                    try:
-                        ut32a_id = int(self.ut32a_id_field.value) if hasattr(self, 'ut32a_id_field') else 1
-                    except Exception:
-                        ut32a_id = 1
-                    try:
-                        alicat_start = int(self.alicat_start_id_field.value) if hasattr(self, 'alicat_start_id_field') else 2
-                    except Exception:
-                        alicat_start = 2
-                    # store mapping
-                    self.device_config = {"ut32a_id": ut32a_id, "alicat_start_id": alicat_start}
-                    if dtype == 'Simulator':
-                        self.device_service = DeviceService()
-                        self.device_service.connect_simulator()
-                        self.data_service = DataService()
-                        self.conn_status.value = f"Connected (Simulator)"
-                        self.conn_status.color = 'green'
-                    else:
-                        # Serial
-                        port = self.port_field.value if hasattr(self, 'port_field') else None
+            dtype = self.device_type.value
 
-                        try:
-                            baud = int(self.baud_field.value) if hasattr(self, 'baud_field') else 9600
-                        except Exception:
-                            baud = 9600
+            self.device_service = DeviceService()
 
-                        try:
-                            self.device_service = DeviceService()
-                            self.device_service.connect_serial(port, baud)   # 🔥 핵심
+            if dtype == "Simulator":
+                self.device_service.connect_simulator()
+                self.conn_status.value = "Connected (Simulator)"
+                self.conn_status.color = "green"
+                for i in range(5):
+                    self._update_device_indicator(i, True)
 
-                            self.conn_status.value = f"Connected ({port}@{baud})"
-                            self.conn_status.color = 'green'
-
-                        except Exception as ex:
-                            self.conn_status.value = f"Connect failed: {ex}"
-                            self.conn_status.color = 'red'
             else:
-                # disconnect
-                try:
-                    if isinstance(self.device, AlicatController):
-                        # simulator: just drop reference
-                        del self.device
-                    else:
-                        # serial
-                        try:
-                            self.device.close()
-                        except Exception:
-                            pass
-                        del self.device
-                    self.conn_status.value = 'Not connected'
-                    self.conn_status.color = 'red'
-                except Exception:
-                    pass
+                temp_port = self.temp_port_field.value.strip()
+                temp_baud = int(self.temp_baud_field.value)
+                gas_port = self.gas_port_field.value.strip()
+                gas_baud = int(self.gas_baud_field.value)
 
-            try:
+                # 인디케이터를 "Checking..." 상태로
+                ports_str = []
+                if temp_port:
+                    ports_str.append(f"Temp:{temp_port}")
+                if gas_port:
+                    ports_str.append(f"Gas:{gas_port}")
+                self.conn_status.value = f"Connecting {', '.join(ports_str)}..."
+                self.conn_status.color = "#666666"
+                for i in range(5):
+                    self.dev_icons[i].color = "#999999"
+                    self.dev_status_texts[i].value = "Checking..."
+                    self.dev_status_texts[i].color = "#999999"
                 self.page.update()
-            except Exception:
-                pass
-        except Exception as e:
-            print('toggle_connection error:', e)
+
+                self.device_service.connect_serial(temp_port, temp_baud, gas_port, gas_baud)
+
+                # 개별 장치 ping
+                status = self.device_service.check_connections()
+
+                self._update_device_indicator(0, status["temperature"])
+                for i in range(4):
+                    wo = status["gas"][i] and not self.device_service.gas_readable[i]
+                    self._update_device_indicator(i + 1, status["gas"][i], write_only=wo)
+
+                # 포트 열기 실패 표시
+                if not temp_port:
+                    self.dev_status_texts[0].value = "Port not set"
+                    self.dev_status_texts[0].color = "#999999"
+                    self.dev_icons[0].color = "#999999"
+                elif not self.device_service.temp_client:
+                    self.dev_status_texts[0].value = f"{temp_port} open failed"
+                    self.dev_icons[0].color = "#F44336"
+
+                if not gas_port:
+                    for i in range(4):
+                        self.dev_status_texts[i + 1].value = "Port not set"
+                        self.dev_status_texts[i + 1].color = "#999999"
+                        self.dev_icons[i + 1].color = "#999999"
+                elif not self.device_service.gas_client:
+                    for i in range(4):
+                        self.dev_status_texts[i + 1].value = f"{gas_port} open failed"
+                        self.dev_icons[i + 1].color = "#F44336"
+
+                ok_count = (1 if status["temperature"] else 0) + sum(status["gas"])
+                self.conn_status.value = f"Connected ({ok_count}/5 devices online)"
+                self.conn_status.color = "#4CAF50" if ok_count == 5 else ("#FF9800" if ok_count > 0 else "red")
+
+            self.page.update()
+
+        except Exception as ex:
+            self.conn_status.value = f"Connect failed: {ex}"
+            self.conn_status.color = "red"
+            for i in range(5):
+                self._update_device_indicator(i, False)
+            self.page.update()
+  
+    def _send_setpoint_from_settings(self, ch_idx: int):
+        """세팅창에서 setpoint를 장치에 직접 전송"""
+        try:
+            val = float(self.sp_input_fields[ch_idx].value)
+        except (ValueError, IndexError):
+            self.sp_result_texts[ch_idx].value = "Invalid value"
+            self.sp_result_texts[ch_idx].color = "#F44336"
+            self.page.update()
+            return
+
+        try:
+            self.device_service.set_gas(device_index=ch_idx, channel=1, value=val)
+            self.sp_result_texts[ch_idx].value = f"Sent {val}"
+            self.sp_result_texts[ch_idx].color = "#4CAF50"
+        except Exception as ex:
+            self.sp_result_texts[ch_idx].value = f"Failed: {ex}"
+            self.sp_result_texts[ch_idx].color = "#F44336"
+
+        self.page.update()
 
     def _apply_gas_channel(self, ch_idx: int):
+
         try:
             sp_field = self.channel_controls[ch_idx]["sp_field"]
             sp = float(sp_field.value) if sp_field and sp_field.value != "" else 0.0
         except Exception:
             sp = 0.0
 
-       
-        print(f"Apply gas schedule to CH{ch_idx+1}: setpoint={sp}")
         try:
-            # simulator path
-            if getattr(self, 'device', None) is not None and isinstance(self.device, AlicatController):
-                # Alicat simulator channels are 1-based
-                dev_ch = ch_idx + 1
-                try:
-                    self.device.set_flow(dev_ch, sp)
-                    self.conn_status.value = f"Applied CH{ch_idx+1} -> {sp} (sim)"
-                    self.conn_status.color = 'green'
-                except Exception as ex:
-                    self.conn_status.value = f"Apply failed: {ex}"
-                    self.conn_status.color = 'red'
+            self.device_service.set_gas(
+                device_index=ch_idx,
+                channel=1,
+                value=sp
+            )
 
-            # serial path (basic line protocol placeholder)
-            elif getattr(self, 'device', None) is not None and serial is not None and hasattr(self.device, 'write'):
-                base = self.device_config.get('alicat_start_id', 2) if hasattr(self, 'device_config') else 2
-                slave = base + ch_idx
-                cmd = f"ID {slave} SET {sp}\n"
-                try:
-                    self.device.write(cmd.encode('ascii'))
-                    self.conn_status.value = f"Sent to ID {slave}: {sp}"
-                    self.conn_status.color = 'green'
-                except Exception as ex:
-                    self.conn_status.value = f"Send failed: {ex}"
-                    self.conn_status.color = 'red'
-            else:
-                self.conn_status.value = 'No device connected'
-                self.conn_status.color = 'red'
+            self.conn_status.value = f"CH{ch_idx+1} -> {sp}"
+            self.conn_status.color = "green"
 
-            try:
-                self.page.update()
-            except Exception:
-                pass
-        except Exception as e:
-            print('apply_gas_channel error:', e)
+        except Exception as ex:
+            self.conn_status.value = f"Apply failed: {ex}"
+            self.conn_status.color = "red"
 
+        self.page.update()
+  
     def _apply_all_configuration(self):
         # apply all channel setpoints to device
         try:
@@ -684,97 +868,117 @@ class SchedulerApp:
         except Exception:
             pass
 
-    def _emergency_stop(self):
-        try:
-            if getattr(self, 'device', None) is not None and isinstance(self.device, AlicatController):
-                self.device.emergency_stop()
-                self.conn_status.value = 'Emergency stop sent (sim)'
-                self.conn_status.color = 'red'
-            elif getattr(self, 'device', None) is not None and hasattr(self.device, 'write'):
-                # placeholder serial emergency command
-                try:
-                    self.device.write(b"EMERGENCY\n")
-                    self.conn_status.value = 'Emergency sent (serial)'
-                    self.conn_status.color = 'red'
-                except Exception as ex:
-                    self.conn_status.value = f'EMERGENCY send failed: {ex}'
-                    self.conn_status.color = 'red'
-            else:
-                self.conn_status.value = 'No device connected'
-                self.conn_status.color = 'red'
-            try:
-                self._refresh_status_table()
-            except Exception:
-                pass
-            try:
-                self.page.update()
-            except Exception:
-                pass
-        except Exception as e:
-            print('emergency_stop error:', e)
-
     def _refresh_status_table(self):
-        # update the live status table from device (simulator) or keep placeholders
+
         if self.status_table is None:
             return
+
         rows = []
+
         try:
-            if getattr(self, 'device', None) is not None and isinstance(self.device, AlicatController):
-                st = self.device.get_data()
-                for i in range(1, 5):
-                    d = st.get(i, {})
-                    gas = d.get('gas', '-')
-                    sp = f"{d.get('sp', 0.0):.2f}"
-                    flow = f"{d.get('flow', 0.0):.3f}"
-                    press = f"{d.get('pressure', '-'):.2f}" if d.get('pressure') is not None else '-'
-                    rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text(str(i))), ft.DataCell(ft.Text(gas)), ft.DataCell(ft.Text(sp)), ft.DataCell(ft.Text(flow)), ft.DataCell(ft.Text(press))]))
-            else:
-                # no device: reflect UI fields
+            # ✅ DeviceService 사용
+            if hasattr(self, "device_service") and self.device_service:
+
+                data = self.device_service.read_all()
+                gas_list = data.get("gas", [])
+
                 for i in range(4):
-                    dd = self.channel_controls[i].get('gas_dd')
-                    spf = self.channel_controls[i].get('sp_field')
-                    gas = dd.value if dd else '-'
-                    sp = f"{float(spf.value):.2f}" if spf and spf.value != '' else '0.00'
-                    rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text(str(i+1))), ft.DataCell(ft.Text(gas)), ft.DataCell(ft.Text(sp)), ft.DataCell(ft.Text('0.00')), ft.DataCell(ft.Text('-'))]))
+
+                    if i < len(gas_list) and gas_list[i] is not None:
+                        g = gas_list[i]
+
+                        gas_name = g.get("gas", "-")
+                        sp = f"{g.get('sp', 0.0):.2f}"
+                        flow = f"{g.get('pv', 0.0):.3f}"
+                        press_val = g.get("pressure")
+                        press = f"{press_val:.2f}" if press_val is not None else "-"
+
+                    else:
+                        gas_name = "-"
+                        sp = "0.00"
+                        flow = "0.00"
+                        press = "-"
+
+                    rows.append(
+                        ft.DataRow(
+                            cells=[
+                                ft.DataCell(ft.Text(str(i + 1))),
+                                ft.DataCell(ft.Text(gas_name)),
+                                ft.DataCell(ft.Text(sp)),
+                                ft.DataCell(ft.Text(flow)),
+                                ft.DataCell(ft.Text(press)),
+                            ]
+                        )
+                    )
+
+            else:
+                # 🔹 장치 연결 안된 경우 → UI 값 반영
+                for i in range(4):
+                    dd = self.channel_controls[i].get("gas_dd")
+                    spf = self.channel_controls[i].get("sp_field")
+
+                    gas = dd.value if dd else "-"
+                    sp = (
+                        f"{float(spf.value):.2f}"
+                        if spf and spf.value != ""
+                        else "0.00"
+                    )
+
+                    rows.append(
+                        ft.DataRow(
+                            cells=[
+                                ft.DataCell(ft.Text(str(i + 1))),
+                                ft.DataCell(ft.Text(gas)),
+                                ft.DataCell(ft.Text(sp)),
+                                ft.DataCell(ft.Text("0.00")),
+                                ft.DataCell(ft.Text("-")),
+                            ]
+                        )
+                    )
+
         except Exception as e:
-            print('refresh_status_table error:', e)
+            print("refresh_status_table error:", e)
             return
 
-        # replace table rows
+        # 테이블 교체
         try:
             self.status_table.rows.clear()
             self.status_table.rows.extend(rows)
+            self.status_table.update()
         except Exception:
             pass
-
+    
     def _start_gas_channel(self, ch_idx: int):
 
-        self.schedule_mode = "gas"
-        self.active_gas_channel = ch_idx
-        self.schedule_time = 0.0
+            self.schedule_mode = "gas"
+            self.active_gas_channel = ch_idx
+            self.schedule_time = 0.0
 
-        # 해당 채널만 초기화
-        targets = self._get_gas_targets(0.0)
+            # 해당 채널만 초기화
+            targets = self._get_gas_targets(0.0)
 
-        for i in range(4):
-            if i == ch_idx:
-                init_val = targets[i]
-            else:
-                init_val = 0.0
+            for i in range(4):
+                if i == ch_idx:
+                    init_val = targets[i]
+                else:
+                    init_val = 0.0
 
-            self.history[i] = deque([init_val] * 600, maxlen=600)
+                self.history[i] = deque([init_val] * 600, maxlen=600)
 
-        self.trend_running = True
-        self.trend_run_button.text = "Stop"
+            self.trend_running = True
+            self.trend_run_button.text = "Stop"
 
-        self.page.update()
+            self.page.update()
 
     def _recompute_temp_rates(self):
         prev_temp = 25.0
         for i in range(8):
+            rate_label = self.temp_steps[i]["rate_text"]
+            if not self.temp_step_enabled[i]:
+                rate_label.value = "-"
+                continue
             tf = self.temp_steps[i]["temp_field"]
             df = self.temp_steps[i]["dur_field"]
-            rate_label = self.temp_steps[i]["rate_text"]
             try:
                 t_val = float(tf.value) if tf and tf.value != "" else prev_temp
             except Exception:
@@ -786,105 +990,68 @@ class SchedulerApp:
 
             if d_val > 0:
                 rate = (t_val - prev_temp) / d_val
-                rate_label.value = f"Rate: {rate:.2f} °/h"
+                rate_label.value = f"{rate:.1f}"
             else:
-                rate_label.value = "Rate: -"
+                rate_label.value = "-"
 
             prev_temp = t_val
 
     def _render_trend(self) -> str:
-        """Render current history to PNG and return base64 data URI.
-        If the configured window covers the full schedule duration, render from t=0..T.
-        Otherwise render the latest window_samples ending at current schedule_time.
+        """Render the full schedule as a dotted target line,
+        and overlay the measured/simulated values that follow along.
         """
-        fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
+        fig, ax = plt.subplots(figsize=(10, 5.5), dpi=110)
         colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
-        # total schedule duration in seconds
         total_dur_hours = self._get_total_schedule_duration()
-        total_dur_seconds = int(total_dur_hours * 3600) if total_dur_hours and total_dur_hours > 0 else 0
+        total_dur_seconds = int(total_dur_hours * 3600) if total_dur_hours and total_dur_hours > 0 else 600
+        total_dur_seconds = max(total_dur_seconds, 60)
+        schedule_pts = min(total_dur_seconds, 3600)
+        sched_times_h = [i * total_dur_hours / schedule_pts for i in range(schedule_pts + 1)]
+        sched_times_s = [t * 3600.0 for t in sched_times_h]
+
+        elapsed_seconds = int(round(self.schedule_time * 3600.0))
 
         if self.schedule_mode == 'temp':
-            # temperature-mode plotting (single measured series + target)
-            if total_dur_seconds > 0 and self.window_samples >= total_dur_seconds:
-                # show entire schedule from t=0 to total_dur_seconds (cap to buffer size)
-                samples = min(total_dur_seconds, self.measured.maxlen)
-                sample_times_hours = [i / 3600.0 for i in range(samples)]
-                sample_times_seconds = [i for i in range(samples)]
+            sched_targets = [self._get_schedule_target(t) for t in sched_times_h]
+            ax.plot(sched_times_s, sched_targets, color=colors[1], linestyle='--',
+                    linewidth=2, label="Schedule", alpha=0.7)
 
-                # compute target across schedule
-                targets = [self._get_schedule_target(t) for t in sample_times_hours]
+            n_measured = min(elapsed_seconds, len(self.measured))
+            if n_measured > 1:
+                measured_list = list(self.measured)[-n_measured:]
+                meas_times = [elapsed_seconds - (n_measured - 1 - i) for i in range(n_measured)]
+                ax.plot(meas_times, measured_list, color=colors[0], linewidth=2, label="Measured")
 
-                # measured values may only exist for recent times; align measured deque to absolute times
-                measured_plot = [math.nan] * samples
-                measured_len = len(self.measured)
-                if measured_len > 0:
-                    measured_start_time = self.schedule_time - (measured_len - 1) / 3600.0
-                    measured_list = list(self.measured)
-                    for idx in range(samples):
-                        t = sample_times_hours[idx]
-                        if measured_start_time <= t <= self.schedule_time:
-                            sec_offset = int(round((t - measured_start_time) * 3600.0))
-                            if 0 <= sec_offset < measured_len:
-                                measured_plot[idx] = measured_list[sec_offset]
-
-                ax.plot(sample_times_seconds, measured_plot, label="Measured", color=colors[0])
-                ax.plot(sample_times_seconds, targets, label="Target", color=colors[1], linestyle="--")
-            else:
-                # recent-window view: last N samples ending at schedule_time
-                n = max(1, min(self.window_samples, len(self.measured)))
-                data = list(self.measured)[-n:]
-                # sample times in seconds since schedule start
-                sample_times_seconds = [int(round(self.schedule_time * 3600.0)) - (n - 1 - i) for i in range(n)]
-                targets = []
-                sample_times_hours = []
-                for i in range(n):
-                    sample_time_h = self.schedule_time - (n - 1 - i) / 3600.0
-                    sample_times_hours.append(sample_time_h)
-                    targets.append(self._get_schedule_target(sample_time_h))
-
-                ax.plot(sample_times_seconds, data, label="Measured", color=colors[0])
-                ax.plot(sample_times_seconds, targets, label="Target", color=colors[1], linestyle="--")
+            ax.set_ylim(0, 100)
+            ax.set_ylabel("Temperature (°C)", fontsize=13)
 
         else:
-            # gas-mode plotting (per-channel histories + targets)
-            # compute visible window
-            n = max(1, min(self.window_samples, max(len(self.history[i]) for i in range(4))))
-            # sample times in seconds
-            sample_times_seconds = [int(round(self.schedule_time * 3600.0)) - (n - 1 - i) for i in range(n)]
-            sample_times_hours = [self.schedule_time - (n - 1 - i) / 3600.0 for i in range(n)]
-
-            # plot each channel
             for ch in range(4):
-                data = list(self.history[ch])[-n:]
-                ax.plot(sample_times_seconds, data, label=f"CH{ch+1}", color=colors[ch])
+                ch_targets = [self._get_gas_targets(t)[ch] for t in sched_times_h]
+                ax.plot(sched_times_s, ch_targets, color=colors[ch], linestyle='--',
+                        linewidth=1.5, alpha=0.6)
 
-            # plot channel targets as dashed lines
-            targets_per_channel = [self._get_gas_targets(t) for t in sample_times_hours]
-            # transpose targets_per_channel to per-channel lists
-            for ch in range(4):
-                ch_targets = [tp[ch] if tp and ch < len(tp) and tp[ch] is not None else math.nan for tp in targets_per_channel]
-                ax.plot(sample_times_seconds, ch_targets, color=colors[ch], linestyle='--', linewidth=1)
+            n_measured = min(elapsed_seconds, max(len(self.history[i]) for i in range(4)))
+            if n_measured > 1:
+                for ch in range(4):
+                    ch_data = list(self.history[ch])[-n_measured:]
+                    ch_times = [elapsed_seconds - (n_measured - 1 - i) for i in range(n_measured)]
+                    ax.plot(ch_times, ch_data, color=colors[ch], linewidth=2, label=f"CH{ch+1}")
 
-        ax.legend(loc="upper right", fontsize=8)
-        ax.set_ylabel("Value")
-        ax.set_xlabel("Seconds")
-        # ensure x-axis starts at 0 when schedule begins
-        try:
-            if 'sample_times_seconds' in locals() and len(sample_times_seconds) > 0:
-                xmax = max(sample_times_seconds)
-                ax.set_xlim(0, xmax)
+            ax.set_ylim(0, 15)
+            ax.set_ylabel("Flow (sccm)", fontsize=13)
 
-            # Y축 고정 범위 설정
-            if self.schedule_mode == "temp":
-                ax.set_ylim(0, 100)
-            else:
-                ax.set_ylim(0, 15)
-        except Exception:
-            pass
+        ax.set_xlim(0, max(total_dur_seconds, 60))
+        ax.set_xlabel("Time (s)", fontsize=13)
+        ax.tick_params(axis='both', labelsize=12)
+        ax.legend(loc="upper right", fontsize=11)
         ax.grid(True, linestyle="--", alpha=0.4)
-        plt.tight_layout()
 
+        if elapsed_seconds > 0 and elapsed_seconds < total_dur_seconds:
+            ax.axvline(x=elapsed_seconds, color='red', linestyle=':', linewidth=1, alpha=0.6)
+
+        plt.tight_layout()
         buf = io.BytesIO()
         fig.savefig(buf, format="png")
         plt.close(fig)
@@ -922,7 +1089,13 @@ class SchedulerApp:
 
                     total_dur = self._get_total_schedule_duration()
                     if total_dur > 0 and self.schedule_time >= total_dur:
-                        self.schedule_time = 0.0
+                        self.schedule_time = total_dur
+                        self.trend_image.src = self._render_trend()
+                        self.trend_image.update()
+                        self.trend_running = False
+                        self.trend_run_button.text = "Start"
+                        self.page.update()
+                        continue
 
                     # -------------------------------------------------
                     # 4️⃣ 그래프 데이터 업데이트
@@ -945,11 +1118,7 @@ class SchedulerApp:
 
                         targets = self._get_gas_targets(self.schedule_time)
 
-                        manual_mode = (
-                            hasattr(self, "control_mode_dd")
-                            and self.control_mode_dd
-                            and self.control_mode_dd.value == "Manual Mode"
-                        )
+                        manual_mode = (self.control_mode == "Manual Mode")
 
                         for ch in range(4):
 
@@ -1038,10 +1207,12 @@ class SchedulerApp:
     
 
     def _get_total_schedule_duration(self) -> float:
-        """Return total schedule duration in hours based on current mode."""
+        """Return total schedule duration in hours based on current mode (enabled steps only)."""
         if self.schedule_mode == "temp":
             total = 0.0
-            for s in self.temp_steps:
+            for i, s in enumerate(self.temp_steps):
+                if not self.temp_step_enabled[i]:
+                    continue
                 df = s.get("dur_field")
                 try:
                     total += float(df.value) if df and df.value != "" else 0.0
@@ -1049,19 +1220,32 @@ class SchedulerApp:
                     pass
             return total
         else:
-            # compute the total duration as the maximum total among gas channels
-            max_total = 0.0
-            for ch_steps in self.gas_steps:
-                ch_total = 0.0
-                for slot in ch_steps:
+            if self.control_mode == "Mixing Mode":
+                total = 0.0
+                for i, slot in enumerate(self.mixing_steps):
+                    if not self.mixing_step_enabled[i]:
+                        continue
                     df = slot.get("dur_field")
                     try:
-                        ch_total += float(df.value) if df and df.value != "" else 0.0
+                        total += float(df.value) if df and df.value != "" else 0.0
                     except Exception:
                         pass
-                if ch_total > max_total:
-                    max_total = ch_total
-            return max_total
+                return total
+            else:
+                max_total = 0.0
+                for ch_idx, ch_steps in enumerate(self.gas_steps):
+                    ch_total = 0.0
+                    for i, slot in enumerate(ch_steps):
+                        if not self.gas_step_enabled[ch_idx][i]:
+                            continue
+                        df = slot.get("dur_field")
+                        try:
+                            ch_total += float(df.value) if df and df.value != "" else 0.0
+                        except Exception:
+                            pass
+                    if ch_total > max_total:
+                        max_total = ch_total
+                return max_total
 
     def _get_schedule_target(self, t_hours: float) -> float:
         """Compute the target value at time t_hours into the schedule.
@@ -1069,9 +1253,10 @@ class SchedulerApp:
         For gas: use each channel's setpoint and duration similarly, but we take CH1 as representative.
         """
         if self.schedule_mode == "temp":
-            # build step list of (temp, dur)
             steps = []
             for i, s in enumerate(self.temp_steps):
+                if not self.temp_step_enabled[i]:
+                    continue
                 tf = s.get("temp_field")
                 df = s.get("dur_field")
                 try:
@@ -1119,7 +1304,9 @@ class SchedulerApp:
 
             steps = []
 
-            for slot in self.mixing_steps:
+            for i, slot in enumerate(self.mixing_steps):
+                if not self.mixing_step_enabled[i]:
+                    continue
                 sp = slot.get("setpoint")
                 df = slot.get("dur_field")
 
@@ -1178,7 +1365,9 @@ class SchedulerApp:
             for ch_index, ch_steps in enumerate(self.gas_steps):
                 steps = []
 
-                for slot in ch_steps:
+                for i, slot in enumerate(ch_steps):
+                    if not self.gas_step_enabled[ch_index][i]:
+                        continue
                     sp = slot.get("setpoint")
                     df = slot.get("dur_field")
 
