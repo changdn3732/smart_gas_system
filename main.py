@@ -244,7 +244,7 @@ class SchedulerApp:
             ]), expand=5, padding=12),
         ], expand=True)
 
-        page.add(layout)
+        page.add(ft.Stack([layout, self._numpad_overlay], expand=True))
 
     def _build_schedule_panel(self):
         temp_btn = self._make_sq_button("Temperature", on_click=lambda e: self._switch_schedule_mode("temp"))
@@ -359,33 +359,47 @@ class SchedulerApp:
             on_click=lambda e: self._numpad_confirm(),
         )
 
-        pad = ft.Column([
-            ft.Container(
-                content=self._numpad_display,
-                bgcolor="#f9f9f9", border=ft.Border.all(2, "#003366"),
-                border_radius=8,
-                padding=ft.padding.symmetric(horizontal=16, vertical=12),
-                width=310, alignment=ft.Alignment(1, 0),
-            ),
-            ft.Container(height=8),
-            ft.Row([_kb("7"), _kb("8"), _kb("9"), _kb("\u232b", bg="#ffe0e0")],
-                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-            ft.Row([_kb("4"), _kb("5"), _kb("6"), _kb("C", bg="#ffe0e0")],
-                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-            ft.Row([_kb("1"), _kb("2"), _kb("3"), _kb("\u00b1", bg="#e0e0ff")],
-                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-            ft.Row([_kb("0", w=148), _kb("."), ok_btn],
-                   spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-        ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        cancel_btn = ft.Container(
+            content=ft.Text("Cancel", size=16, color="#666666",
+                            text_align=ft.TextAlign.CENTER),
+            width=310, height=40, bgcolor="#eeeeee", border_radius=8,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: self._numpad_cancel(),
+        )
 
-        self._numpad_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("\uc22b\uc790 \uc785\ub825", size=18),
-            content=ft.Container(content=pad, width=340),
-            actions=[
-                ft.TextButton("Cancel", on_click=lambda e: self._numpad_cancel()),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
+        pad_card = ft.Container(
+            content=ft.Column([
+                ft.Text("\uc22b\uc790 \uc785\ub825", size=18, weight=ft.FontWeight.BOLD),
+                ft.Container(height=4),
+                ft.Container(
+                    content=self._numpad_display,
+                    bgcolor="#f9f9f9", border=ft.Border.all(2, "#003366"),
+                    border_radius=8, padding=12,
+                    width=310, alignment=ft.Alignment(1, 0),
+                ),
+                ft.Container(height=8),
+                ft.Row([_kb("7"), _kb("8"), _kb("9"), _kb("\u232b", bg="#ffe0e0")],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Row([_kb("4"), _kb("5"), _kb("6"), _kb("C", bg="#ffe0e0")],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Row([_kb("1"), _kb("2"), _kb("3"), _kb("\u00b1", bg="#e0e0ff")],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Row([_kb("0", w=148), _kb("."), ok_btn],
+                       spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ft.Container(height=4),
+                cancel_btn,
+            ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            width=360, bgcolor="#ffffff", border_radius=12,
+            padding=20, border=ft.Border.all(2, "#003366"),
+        )
+
+        self._numpad_overlay = ft.Container(
+            content=pad_card,
+            bgcolor="rgba(0,0,0,0.4)",
+            alignment=ft.Alignment(0, 0),
+            expand=True,
+            visible=False,
+            on_click=lambda e: self._numpad_cancel(),
         )
 
     def _show_numpad(self, target_field):
@@ -395,11 +409,8 @@ class SchedulerApp:
         self._numpad_target = target_field
         self._numpad_value = target_field.value or ""
         self._numpad_display.value = self._numpad_value or "0"
-        try:
-            self.page.open(self._numpad_dialog)
-        except Exception:
-            self._numpad_dialog.open = True
-            self.page.update()
+        self._numpad_overlay.visible = True
+        self.page.update()
 
     def _numpad_key(self, key):
         if key == "\u232b":
@@ -418,10 +429,7 @@ class SchedulerApp:
             self._numpad_value += key
 
         self._numpad_display.value = self._numpad_value or "0"
-        try:
-            self._numpad_display.update()
-        except Exception:
-            self.page.update()
+        self.page.update()
 
     def _numpad_confirm(self):
         if self._numpad_target:
@@ -435,18 +443,12 @@ class SchedulerApp:
                 except Exception:
                     pass
         self._numpad_open = False
-        try:
-            self.page.close(self._numpad_dialog)
-        except Exception:
-            self._numpad_dialog.open = False
+        self._numpad_overlay.visible = False
         self.page.update()
 
     def _numpad_cancel(self):
         self._numpad_open = False
-        try:
-            self.page.close(self._numpad_dialog)
-        except Exception:
-            self._numpad_dialog.open = False
+        self._numpad_overlay.visible = False
         self.page.update()
 
     # ─── Table helpers ───
