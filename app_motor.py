@@ -47,7 +47,7 @@ class MotorApp:
         self.selected_motor = 0
 
         self.steps = [
-            [{'speed': None, 'dur': None, 'dir_dd': None, 'dist_text': None} for _ in range(8)]
+            [{'dist_input': None, 'dur': None, 'dir_dd': None, 'speed_text': None} for _ in range(8)]
             for _ in range(4)
         ]
         self.step_enabled = [
@@ -66,6 +66,7 @@ class MotorApp:
         self.motor_running = [False, False, False, False]
         self._motor_labels = [None, None, None, None]
         self._motor_rows = [None, None, None, None]
+        self.dist_unit = "mm"  # "mm", "cm", "m"
 
     # ──────────────────────────────────────────────
     # Helpers
@@ -517,23 +518,51 @@ class MotorApp:
         self._render_schedule()
         self.page.update()
 
+    def _dist_to_mm(self, val: float) -> float:
+        if self.dist_unit == "cm":
+            return val * 10.0
+        elif self.dist_unit == "m":
+            return val * 1000.0
+        return val
+
+    def _calc_pps(self, dist_mm: float, dur_hours: float) -> int:
+        if dur_hours <= 0:
+            return 0
+        seconds = dur_hours * 3600
+        mm_per_sec = dist_mm / seconds
+        return max(0, int(mm_per_sec * PULSE_PER_MM))
+
     def _on_step_change(self, motor_idx, step_idx):
-        self._update_distance(motor_idx, step_idx)
+        self._update_speed_display(motor_idx, step_idx)
         self.page.update()
 
-    def _update_distance(self, motor_idx, step_idx):
+    def _update_speed_display(self, motor_idx, step_idx):
         slot = self.steps[motor_idx][step_idx]
-        if not slot['speed'] or not slot['dur'] or not slot['dist_text']:
+        if not slot['dist_input'] or not slot['dur'] or not slot['speed_text']:
             return
         try:
-            spd = int(float(slot['speed'].value))
+            raw = float(slot['dist_input'].value)
         except (ValueError, TypeError):
-            spd = 0
+            raw = 0
         dur_h = self._parse_duration_to_hours(slot['dur'].value)
-        if spd > 0 and dur_h > 0:
-            slot['dist_text'].value = self._calc_distance(spd, dur_h, MOTOR_TYPES[motor_idx])
+        mt = MOTOR_TYPES[motor_idx]
+        if raw > 0 and dur_h > 0:
+            if mt == 'linear':
+                dist_mm = self._dist_to_mm(raw)
+                pps = self._calc_pps(dist_mm, dur_h)
+            else:
+                seconds = dur_h * 3600
+                pps = max(0, int(raw / STEP_ANGLE / seconds)) if seconds > 0 else 0
+            slot['speed_text'].value = f"{pps} pps"
         else:
-            slot['dist_text'].value = "-"
+            slot['speed_text'].value = "-"
+
+    def _cycle_dist_unit(self):
+        order = ["mm", "cm", "m"]
+        idx = order.index(self.dist_unit)
+        self.dist_unit = order[(idx + 1) % 3]
+        self._render_schedule()
+        self.page.update()
 
     def _make_dir_toggle(self, motor_idx, step_idx):
         """방향 아이콘 토글 버튼"""
@@ -675,20 +704,36 @@ class MotorApp:
         m = self.selected_motor
         mt = MOTOR_TYPES[m]
         dir_opts = DIRECTION_OPTIONS[mt]
-        dist_header = "Distance" if mt == 'linear' else "Rotation"
+
+        if mt == 'linear':
+            dist_header = f"Dist ({self.dist_unit})"
+        else:
+            dist_header = "Angle (°)"
+
+        unit_btn = ft.Container(
+            content=ft.Text(self.dist_unit.upper(), size=12, weight=ft.FontWeight.BOLD,
+                            color="#ffffff", text_align=ft.TextAlign.CENTER),
+            width=50, height=28, bgcolor="#607D8B", border_radius=4,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: self._cycle_dist_unit(),
+        )
+        self.schedule_content.controls.append(
+            ft.Row([ft.Text("Unit:", size=11), unit_btn], alignment=ft.MainAxisAlignment.CENTER, spacing=6))
+        self.schedule_content.controls.append(ft.Container(height=4))
 
         for step in range(8):
             slot = self.steps[m][step]
-            if not slot['speed']:
-                slot['speed'] = self._make_table_input(
-                    "1000", w=C_W, h=C_H,
+            if not slot['dist_input']:
+                default_dist = "10" if mt == 'linear' else "90"
+                slot['dist_input'] = self._make_table_input(
+                    default_dist, w=C_W, h=C_H,
                     on_change=lambda e, mi=m, si=step: self._on_step_change(mi, si))
                 slot['dur'] = self._make_duration_input(
                     "00:00:30", w=C_W, h=C_H,
                     on_change=lambda e, mi=m, si=step: self._on_step_change(mi, si))
                 slot['dir_dd'] = dir_opts[0]
-                slot['dist_text'] = ft.Text("-", size=11, text_align=ft.TextAlign.CENTER)
-            self._update_distance(m, step)
+                slot['speed_text'] = ft.Text("-", size=10, text_align=ft.TextAlign.CENTER)
+            self._update_speed_display(m, step)
 
         data_rows = []
         for step in range(8):
@@ -698,13 +743,13 @@ class MotorApp:
                 lambda e, mi=m, si=step: self._toggle_step(mi, si))
             dir_btn = self._make_dir_toggle(m, step)
             data_rows.append([
-                toggle, slot['speed'], slot['dur'], dir_btn, slot['dist_text'],
+                toggle, slot['dist_input'], slot['dur'], dir_btn, slot['speed_text'],
             ])
 
         table = self._build_table(
-            headers=["Step", "Speed", "Duration", "Dir", dist_header],
+            headers=["Step", dist_header, "Duration", "Dir", "Speed"],
             data_rows=data_rows,
-            col_widths=[50, C_W, C_W, 50, 90],
+            col_widths=[50, C_W, C_W, 50, 75],
             row_height=C_H,
         )
         self.schedule_content.controls.append(
@@ -778,19 +823,15 @@ class MotorApp:
     # ──────────────────────────────────────────────
 
     def _get_schedule_segments(self, motor_idx):
-        """각 스텝의 (시작시간, 종료시간, 속도, 방향) 리스트 반환 (시간 단위: hours)"""
+        """각 스텝의 (시작시간, 종료시간, 속도pps, 방향) 리스트 반환 (시간 단위: hours)"""
         segments = []
         cum = 0.0
         for i, slot in enumerate(self.steps[motor_idx]):
             if not self.step_enabled[motor_idx][i]:
                 continue
-            sp_f = slot.get('speed')
             df = slot.get('dur')
             dd = slot.get('dir_dd')
-            try:
-                spd = float(sp_f.value) if sp_f and sp_f.value else 0
-            except (ValueError, TypeError):
-                spd = 0
+            spd = self._dist_input_to_pps(motor_idx, i)
             dur = self._parse_duration_to_hours(df.value) if df and df.value else 0.0
             d = dd if isinstance(dd, str) else (dd.value if dd else '+')
             if dur > 0:
@@ -812,9 +853,12 @@ class MotorApp:
         mt = MOTOR_TYPES[motor_idx]
         if mt == 'linear':
             dist_mm = speed_pps_to_mm_per_sec(int(spd)) * seconds
-            if dist_mm >= 1.0:
+            if self.dist_unit == "m":
+                return f"{arrow} {dist_mm / 1000:.3f}m"
+            elif self.dist_unit == "cm":
+                return f"{arrow} {dist_mm / 10:.2f}cm"
+            else:
                 return f"{arrow} {dist_mm:.1f}mm"
-            return f"{arrow} {dist_mm * 1000:.0f}μm"
         else:
             deg = speed_pps_to_deg_per_sec(int(spd)) * seconds
             if deg >= 360:
@@ -937,17 +981,32 @@ class MotorApp:
             total += self._parse_duration_to_hours(df.value) if df and df.value else 0.0
         return total
 
+    def _dist_input_to_pps(self, motor_idx, step_idx) -> float:
+        slot = self.steps[motor_idx][step_idx]
+        di = slot.get('dist_input')
+        df = slot.get('dur')
+        try:
+            raw = float(di.value) if di and di.value else 0
+        except (ValueError, TypeError):
+            raw = 0
+        dur_h = self._parse_duration_to_hours(df.value) if df and df.value else 0.0
+        if raw <= 0 or dur_h <= 0:
+            return 0
+        mt = MOTOR_TYPES[motor_idx]
+        if mt == 'linear':
+            dist_mm = self._dist_to_mm(raw)
+            return self._calc_pps(dist_mm, dur_h)
+        else:
+            seconds = dur_h * 3600
+            return max(0, int(raw / STEP_ANGLE / seconds)) if seconds > 0 else 0
+
     def _get_speed_at(self, motor_idx, t_hours) -> float:
         steps_list = []
         for i, slot in enumerate(self.steps[motor_idx]):
             if not self.step_enabled[motor_idx][i]:
                 continue
-            sp_f = slot.get('speed')
+            spd = self._dist_input_to_pps(motor_idx, i)
             df = slot.get('dur')
-            try:
-                spd = float(sp_f.value) if sp_f and sp_f.value else 0
-            except (ValueError, TypeError):
-                spd = 0
             dur = self._parse_duration_to_hours(df.value) if df and df.value else 0.0
             steps_list.append((spd, dur))
 
