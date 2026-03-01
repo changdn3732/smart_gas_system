@@ -489,7 +489,13 @@ class MotorApp:
     def _emergency_stop(self):
         if self.motor_ctrl:
             self.motor_ctrl.stop_all(immediate=True)
-        self.schedule_running = False
+        if self.schedule_running:
+            self.schedule_running = False
+            if hasattr(self, 'start_btn') and self.start_btn:
+                self.start_btn.text = "Start"
+            if hasattr(self, '_status_text') and self._status_text:
+                self._status_text.value = "Emergency stopped"
+                self._status_text.color = "#ff0000"
         self.page.update()
 
     # ──────────────────────────────────────────────
@@ -768,7 +774,9 @@ class MotorApp:
                                            on_click=lambda e: self._apply_schedule())
         self.start_btn = ft.ElevatedButton("Start", bgcolor="#4CAF50", color="white",
                                            on_click=lambda e: self._start_schedule())
-        btn_row.controls.extend([self.apply_btn, self.start_btn])
+        estop_btn = ft.ElevatedButton("STOP", bgcolor="#ff0000", color="white",
+                                      on_click=lambda e: self._emergency_stop())
+        btn_row.controls.extend([self.apply_btn, self.start_btn, estop_btn])
         self.schedule_content.controls.append(btn_row)
 
         self._status_text = ft.Text("", size=12)
