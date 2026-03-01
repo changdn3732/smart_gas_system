@@ -950,13 +950,13 @@ class MotorApp:
         fig = plt.figure(figsize=(3.2, 4.5), dpi=100)
         ax = fig.add_subplot(111)
 
-        upper_pos = self.stage_gap / 2 + self.cur_z['upper']
-        lower_pos = -(self.stage_gap / 2) + self.cur_z['lower']
+        lower_pos = 0.0 + self.cur_z['lower']
+        upper_pos = self.stage_gap + self.cur_z['upper']
         gap_now = upper_pos - lower_pos
 
         margin = max(self.stage_gap * 0.3, 10)
-        y_top = self.stage_gap / 2 + margin
-        y_bot = -(self.stage_gap / 2) - margin
+        y_top = self.stage_gap + margin
+        y_bot = -margin
 
         ax.set_xlim(-1, 1)
         ax.set_ylim(y_bot, y_top)
