@@ -501,6 +501,8 @@ class MotorApp:
         return ft.Container(content=self.schedule_content, expand=True, padding=10)
 
     def _set_motor_mode(self, mode):
+        if mode == "manual" and self.schedule_running:
+            return
         self.motor_mode = mode
         self._render_schedule()
         self.page.update()
@@ -539,6 +541,8 @@ class MotorApp:
         self.page.update()
 
     def _manual_motor_start(self, motor_idx, direction):
+        if self.schedule_running:
+            return
         if not self.motor_ctrl or not self.motor_ctrl.connected:
             return
         speed = self.high_speed if self.speed_mode == "high" else self.low_speed
@@ -552,6 +556,8 @@ class MotorApp:
             print(f"Manual start error: {ex}")
 
     def _manual_motor_stop(self, motor_idx):
+        if self.schedule_running:
+            return
         if not self.motor_ctrl or not self.motor_ctrl.connected:
             return
         motor_id = MOTOR_IDS[motor_idx]
