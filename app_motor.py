@@ -63,6 +63,9 @@ class MotorApp:
         self.stage_gap = 100.0  # 상부-하부 스테이지 초기 간격 (mm)
         self.cur_z = {'upper': 0.0, 'lower': 0.0}
         self.cur_angle = {'upper': 0.0, 'lower': 0.0}
+        self.home_z = {'upper': 0.0, 'lower': 0.0}
+        self.home_angle = {'upper': 0.0, 'lower': 0.0}
+        self._homing = False
         self._graph_loop_running = False
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
@@ -508,6 +511,35 @@ class MotorApp:
         self._conn_status.color = "red"
         self.page.update()
 
+    def _set_home(self):
+        """현재 위치를 홈으로 설정, lower Z를 0 기준으로 리셋"""
+        offset_z = self.cur_z['lower']
+        self.home_z['upper'] = self.cur_z['upper'] - offset_z
+        self.home_z['lower'] = 0.0
+        self.home_angle['upper'] = self.cur_angle['upper']
+        self.home_angle['lower'] = self.cur_angle['lower']
+        self.cur_z['upper'] = self.cur_z['upper'] - offset_z
+        self.cur_z['lower'] = 0.0
+        self.cur_angle['upper'] = 0.0
+        self.cur_angle['lower'] = 0.0
+        self._update_all_graphs()
+        if hasattr(self, '_status_text') and self._status_text:
+            self._status_text.value = "Home position set"
+            self._status_text.color = "#607D8B"
+        self.page.update()
+
+    def _go_home(self):
+        """홈 위치로 복귀 (시뮬레이션: 즉시 위치 리셋)"""
+        self.cur_z['upper'] = self.home_z['upper']
+        self.cur_z['lower'] = self.home_z['lower']
+        self.cur_angle['upper'] = self.home_angle['upper']
+        self.cur_angle['lower'] = self.home_angle['lower']
+        self._update_all_graphs()
+        if hasattr(self, '_status_text') and self._status_text:
+            self._status_text.value = "Returned to home"
+            self._status_text.color = "#FF9800"
+        self.page.update()
+
     def _confirm_emergency_stop(self):
         def _do_stop(e):
             self._estop_dialog.open = False
@@ -880,6 +912,15 @@ class MotorApp:
             self.schedule_content.controls.append(ft.Container(height=6))
 
         self.schedule_content.controls.append(ft.Divider())
+
+        home_set_btn = ft.ElevatedButton("Set Home", bgcolor="#607D8B", color="white",
+                                         on_click=lambda e: self._set_home())
+        home_go_btn = ft.ElevatedButton("Go Home", bgcolor="#FF9800", color="white",
+                                        on_click=lambda e: self._go_home())
+        self.schedule_content.controls.append(
+            ft.Row([home_set_btn, home_go_btn], alignment=ft.MainAxisAlignment.CENTER, spacing=10))
+        self.schedule_content.controls.append(ft.Container(height=6))
+
         stop_btn = ft.ElevatedButton("STOP ALL", bgcolor="#ff0000", color="white",
                                      on_click=lambda e: self._confirm_emergency_stop())
         self.schedule_content.controls.append(
