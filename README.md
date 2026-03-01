@@ -24,6 +24,40 @@ Flet 기반 온도/가스/모터 통합 제어 시스템
 
 ---
 
+## SSH 키 설정 (최초 1회)
+
+GitHub에서 SSH 방식으로 clone하려면 SSH 키가 등록되어 있어야 합니다.
+
+**1. SSH 키 생성**
+
+```bash
+ssh-keygen -t ed25519 -C "your_email@example.com"
+```
+
+엔터를 눌러 기본 경로에 저장하고, 필요시 비밀번호를 설정합니다.
+
+**2. 공개 키 복사**
+
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+
+출력된 내용을 전체 복사합니다.
+
+**3. GitHub에 등록**
+
+[GitHub → Settings → SSH and GPG keys → New SSH key](https://github.com/settings/keys) 에서 복사한 키를 붙여넣고 저장합니다.
+
+**4. 연결 확인**
+
+```bash
+ssh -T git@github.com
+```
+
+`Hi username! You've successfully authenticated...` 메시지가 나오면 성공입니다.
+
+---
+
 ## Ubuntu 원클릭 설치 (처음 설치)
 
 터미널에 아래를 **한 번에 복사-붙여넣기** 하세요:
@@ -31,7 +65,7 @@ Flet 기반 온도/가스/모터 통합 제어 시스템
 ```bash
 sudo apt update && sudo apt install -y python3-venv python3-pip git
 cd ~
-git clone https://github.com/changdn3732/smart_gas_system.git
+git clone git@github.com:changdn3732/smart_gas_system.git
 cd smart_gas_system
 chmod +x setup_all.sh
 ./setup_all.sh
