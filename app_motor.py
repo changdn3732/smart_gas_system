@@ -752,13 +752,43 @@ class MotorApp:
     # Graph
     # ──────────────────────────────────────────────
 
+    def _get_schedule_segments(self, motor_idx):
+        """각 스텝의 (시작시간, 종료시간, 속도, 방향) 리스트 반환 (시간 단위: hours)"""
+        segments = []
+        cum = 0.0
+        for i, slot in enumerate(self.steps[motor_idx]):
+            if not self.step_enabled[motor_idx][i]:
+                continue
+            sp_f = slot.get('speed')
+            df = slot.get('dur')
+            dd = slot.get('dir_dd')
+            try:
+                spd = float(sp_f.value) if sp_f and sp_f.value else 0
+            except (ValueError, TypeError):
+                spd = 0
+            dur = self._parse_duration_to_hours(df.value) if df and df.value else 0.0
+            d = dd.value if dd else '+'
+            if dur > 0:
+                segments.append((cum, cum + dur, spd, d))
+                cum += dur
+        return segments
+
+    def _get_global_total_duration(self) -> float:
+        return max(self._get_total_duration(mi) for mi in range(4))
+
     def _render_trend(self) -> str:
         if not plt:
             return ""
 
-        fig, ax = plt.subplots(figsize=(7, 3.5), dpi=100)
+        fig, (ax_gantt, ax) = plt.subplots(
+            2, 1, figsize=(7, 5), dpi=100,
+            gridspec_kw={'height_ratios': [1.2, 2]},
+        )
 
-        total_h = self._get_total_duration(self.selected_motor)
+        global_h = self._get_global_total_duration()
+        total_h = max(global_h, self._get_total_duration(self.selected_motor))
+        if total_h <= 0:
+            total_h = 0.01
         total_s = max(int(total_h * 3600), 10)
 
         if total_s < 60:
@@ -768,10 +798,44 @@ class MotorApp:
         else:
             t_unit, t_div = "h", 3600.0
 
+        # ── Gantt chart (timeline) ──
+        bar_colors = ['#42A5F5', '#66BB6A', '#FFA726', '#AB47BC']
+        gantt_labels = ['U-Stage', 'L-Stage', 'U-Rotate', 'L-Rotate']
+        gantt_order = [0, 2, 1, 3]  # upper_stage, upper_rotate, lower_stage, lower_rotate
+
+        for row, mi in enumerate(gantt_order):
+            segs = self._get_schedule_segments(mi)
+            for (t0, t1, spd, d) in segs:
+                if spd > 0:
+                    x0 = t0 * 3600 / t_div
+                    w = (t1 - t0) * 3600 / t_div
+                    ax_gantt.barh(row, w, left=x0, height=0.6,
+                                 color=bar_colors[row], alpha=0.85, edgecolor='#333333', linewidth=0.5)
+                    mid = x0 + w / 2
+                    label = f"{int(spd)}"
+                    ax_gantt.text(mid, row, label, ha='center', va='center', fontsize=8,
+                                 color='white', fontweight='bold')
+
+        if self.schedule_running and self.history[0]:
+            elapsed_disp = len(self.history[0]) / t_div
+            ax_gantt.axvline(x=elapsed_disp, color='red', linewidth=1.5, linestyle='-', alpha=0.8)
+
+        ax_gantt.set_yticks(range(4))
+        ax_gantt.set_yticklabels(gantt_labels, fontsize=10)
+        ax_gantt.set_xlim(0, total_s / t_div)
+        ax_gantt.set_xlabel("")
+        ax_gantt.xaxis.tick_top()
+        ax_gantt.tick_params(axis='x', labelsize=9)
+        ax_gantt.invert_yaxis()
+        ax_gantt.grid(axis='x', alpha=0.3)
+        ax_gantt.set_axisbelow(True)
+        ax_gantt.set_title("Timeline", fontsize=12, fontweight='bold', pad=18)
+
+        # ── Speed graph ──
+        m = self.selected_motor
         pts = min(total_s, 3600)
         sched_t_h = [i * total_h / pts for i in range(pts + 1)]
         sched_t_disp = [t * 3600 / t_div for t in sched_t_h]
-        m = self.selected_motor
         sched_vals = [self._get_speed_at(m, t) for t in sched_t_h]
 
         ax.plot(sched_t_disp, sched_vals, '--', color='#2196F3', linewidth=1.5, alpha=0.7,
@@ -779,21 +843,26 @@ class MotorApp:
 
         if self.history[m]:
             n = len(self.history[m])
-            elapsed_s = n
             hist_t = [i / t_div for i in range(n)]
             ax.plot(hist_t, self.history[m], '-', color='#FF5722', linewidth=2, label='Actual')
 
         max_v = max(sched_vals) if sched_vals else 1000
         if self.history[m]:
             max_v = max(max_v, max(self.history[m]))
-        ax.set_ylim(0, max_v * 1.2)
+        ax.set_ylim(0, max(max_v * 1.2, 100))
         ax.set_xlim(0, total_s / t_div)
-        ax.set_xlabel(f"Time ({t_unit})", fontsize=13)
-        ax.set_ylabel("Speed (pps)", fontsize=13)
-        ax.set_title(f"{MOTOR_LABELS[m]}", fontsize=14, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=12)
-        ax.legend(loc="upper right", fontsize=11)
+        ax.set_xlabel(f"Time ({t_unit})", fontsize=12)
+        ax.set_ylabel("Speed (pps)", fontsize=12)
+        ax.set_title(f"{MOTOR_LABELS[m]}", fontsize=13, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=10)
+        ax.legend(loc="upper right", fontsize=10)
         ax.grid(True, alpha=0.3)
+
+        if self.history[m]:
+            elapsed_disp = len(self.history[m]) / t_div
+            if elapsed_disp < total_s / t_div:
+                ax.axvline(x=elapsed_disp, color='red', linestyle=':', linewidth=1, alpha=0.6)
+
         plt.tight_layout()
 
         buf = io.BytesIO()
