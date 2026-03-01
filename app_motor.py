@@ -73,9 +73,9 @@ class MotorApp:
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
         self.manual_speeds = [
-            {"label": "5 mm/s", "pps": 500},
-            {"label": "50 mm/s", "pps": 5000},
-            {"label": "80 mm/s", "pps": 8000},
+            {"label": "5 mm/s", "pps": 1000},
+            {"label": "20 mm/s", "pps": 4000},
+            {"label": "40 mm/s", "pps": 8000},
         ]
         self.speed_mode_idx = 0
         self.motor_running = [False, False, False, False]

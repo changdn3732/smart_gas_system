@@ -14,10 +14,10 @@ import time
 
 # ==================== 상수 정의 ====================
 
-STEP_ANGLE = 0.72
-PULSE_PER_REV = 500
+STEP_ANGLE = 0.36
+PULSE_PER_REV = 1000
 MM_PER_REV = 5
-PULSE_PER_MM = 100
+PULSE_PER_MM = 200
 
 CMD_REGISTER = 0x0000
 
@@ -335,8 +335,8 @@ class MotorController:
 
     def _initialize_drivers(self):
         for drv in (self.driver1, self.driver2):
-            drv.set_pulse_scale(MotorAxis.X, 1, 100)
-            drv.set_pulse_scale(MotorAxis.Y, 1, 100)
+            drv.set_pulse_scale(MotorAxis.X, 1, 200)
+            drv.set_pulse_scale(MotorAxis.Y, 1, 200)
         self.log("드라이버 초기화 완료")
 
     def _get_driver_axis(self, motor_id: str):
