@@ -69,6 +69,7 @@ class MotorApp:
         self.low_speed = 500
         self.high_speed = 3000
         self.motor_running = [False, False, False, False]
+        self.motor_manual_dir = ['+', 'CW', '+', 'CW']
         self._motor_labels = [None, None, None, None]
         self._motor_rows = [None, None, None, None]
         self.speed_unit = "mm/s"  # "mm/s", "cm/s", "m/s"
@@ -640,6 +641,7 @@ class MotorApp:
         if self.schedule_running:
             return
         self.motor_running[motor_idx] = True
+        self.motor_manual_dir[motor_idx] = direction
         self._highlight_motor(motor_idx, True)
         if self.motor_ctrl and self.motor_ctrl.connected:
             speed = self.high_speed if self.speed_mode == "high" else self.low_speed
@@ -1039,7 +1041,7 @@ class MotorApp:
                     d = self._get_direction_at(mi, self.schedule_time)
                 elif self.motor_running[mi]:
                     spd_pps = self.low_speed if self.speed_mode == "low" else self.high_speed
-                    d = '+'
+                    d = self.motor_manual_dir[mi]
                 mm_per_sec = spd_pps / PULSE_PER_MM
                 sign = -1 if d in ('-', 'minus', 'down') else 1
                 self.cur_z[key] += sign * mm_per_sec * dt
@@ -1053,7 +1055,7 @@ class MotorApp:
                     d = self._get_direction_at(mi, self.schedule_time)
                 elif self.motor_running[mi]:
                     spd_pps = self.low_speed if self.speed_mode == "low" else self.high_speed
-                    d = 'CW'
+                    d = self.motor_manual_dir[mi]
                 deg_per_sec = spd_pps * STEP_ANGLE
                 sign = -1 if d in ('CCW', 'ccw') else 1
                 self.cur_angle[key] += sign * deg_per_sec * dt
