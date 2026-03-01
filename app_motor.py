@@ -543,30 +543,28 @@ class MotorApp:
     def _manual_motor_start(self, motor_idx, direction):
         if self.schedule_running:
             return
-        if not self.motor_ctrl or not self.motor_ctrl.connected:
-            return
-        speed = self.high_speed if self.speed_mode == "high" else self.low_speed
-        motor_id = MOTOR_IDS[motor_idx]
-        mapped_dir = DIRECTION_MAP.get(direction, 'plus')
-        try:
-            self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
-            self.motor_running[motor_idx] = True
-            self._highlight_motor(motor_idx, True)
-        except Exception as ex:
-            print(f"Manual start error: {ex}")
+        self.motor_running[motor_idx] = True
+        self._highlight_motor(motor_idx, True)
+        if self.motor_ctrl and self.motor_ctrl.connected:
+            speed = self.high_speed if self.speed_mode == "high" else self.low_speed
+            motor_id = MOTOR_IDS[motor_idx]
+            mapped_dir = DIRECTION_MAP.get(direction, 'plus')
+            try:
+                self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
+            except Exception as ex:
+                print(f"Manual start error: {ex}")
 
     def _manual_motor_stop(self, motor_idx):
         if self.schedule_running:
             return
-        if not self.motor_ctrl or not self.motor_ctrl.connected:
-            return
-        motor_id = MOTOR_IDS[motor_idx]
-        try:
-            self.motor_ctrl.stop_motor(motor_id)
-        except Exception as ex:
-            print(f"Manual stop error: {ex}")
         self.motor_running[motor_idx] = False
         self._highlight_motor(motor_idx, False)
+        if self.motor_ctrl and self.motor_ctrl.connected:
+            motor_id = MOTOR_IDS[motor_idx]
+            try:
+                self.motor_ctrl.stop_motor(motor_id)
+            except Exception as ex:
+                print(f"Manual stop error: {ex}")
 
     def _highlight_motor(self, motor_idx, active):
         lbl = self._motor_labels[motor_idx]
@@ -581,12 +579,25 @@ class MotorApp:
         except Exception:
             pass
 
+    @staticmethod
+    def _jog_icon(direction: str):
+        icon_map = {
+            '+': ft.Icons.ARROW_UPWARD,
+            '-': ft.Icons.ARROW_DOWNWARD,
+            'CW': ft.Icons.ROTATE_RIGHT,
+            'CCW': ft.Icons.ROTATE_LEFT,
+        }
+        return icon_map.get(direction, ft.Icons.PLAY_ARROW)
+
     def _make_jog_button(self, label, motor_idx, direction, width=100, height=60):
         """누르고 있는 동안 모터 작동, 떼면 정지"""
+        icon = self._jog_icon(direction)
         return ft.GestureDetector(
             content=ft.Container(
-                content=ft.Text(label, size=14, weight=ft.FontWeight.BOLD,
-                                color="#ffffff", text_align=ft.TextAlign.CENTER),
+                content=ft.Column([
+                    ft.Icon(icon, color="#ffffff", size=24),
+                    ft.Text(label, size=10, color="#ffffff", text_align=ft.TextAlign.CENTER),
+                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                 width=width, height=height, bgcolor="#003366", border_radius=8,
                 alignment=ft.Alignment(0, 0),
                 border=ft.Border.all(2, "#001a33"),
