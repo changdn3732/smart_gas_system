@@ -60,6 +60,7 @@ class MotorApp:
         self.history = [[] for _ in range(4)]
 
         # 절대좌표 추적
+        self.stage_gap = 100.0  # 상부-하부 스테이지 초기 간격 (mm)
         self.cur_z = {'upper': 0.0, 'lower': 0.0}
         self.cur_angle = {'upper': 0.0, 'lower': 0.0}
         self._graph_loop_running = False
@@ -435,6 +436,10 @@ class MotorApp:
 
         self._conn_status = ft.Text("Disconnected", color="red", size=13)
 
+        self._gap_input = self._make_table_input(str(self.stage_gap), w=100, h=34)
+        gap_apply_btn = ft.ElevatedButton("Apply", bgcolor="#2196F3", color="white",
+                                          on_click=lambda e: self._apply_gap())
+
         refresh_btn = ft.ElevatedButton("Refresh Ports", on_click=lambda e: self._refresh_ports())
         connect_btn = ft.ElevatedButton("Connect", bgcolor="#4CAF50", color="white",
                                         on_click=lambda e: self._connect_motor())
@@ -451,10 +456,21 @@ class MotorApp:
                 ft.Row([ft.Text("Baudrate:", width=80), self._baud_input]),
                 ft.Row([connect_btn, disconnect_btn, ft.Container(width=20), self._conn_status]),
                 ft.Divider(),
+                ft.Text("Stage Configuration", size=14, weight=ft.FontWeight.BOLD),
+                ft.Row([ft.Text("Gap (mm):", width=80), self._gap_input, gap_apply_btn]),
+                ft.Divider(),
                 stop_all_btn,
             ], spacing=10),
             padding=15,
         )
+
+    def _apply_gap(self):
+        try:
+            self.stage_gap = float(self._gap_input.value)
+        except (ValueError, TypeError):
+            self.stage_gap = 100.0
+        self._update_all_graphs()
+        self.page.update()
 
     def _scan_ports(self):
         if serial:
@@ -928,51 +944,54 @@ class MotorApp:
         return f"data:image/png;base64,{base64.b64encode(buf.read()).decode('ascii')}"
 
     def _render_stage_diagram(self) -> str:
-        """세로 스테이지 도식: 현재 Z 절대좌표를 수평 직선으로 표시"""
+        """통합 스테이지 도식: 상부(위)와 하부(아래) Z 위치를 하나의 세로축에 표시"""
         if not plt:
             return ""
-        fig = plt.figure(figsize=(3.2, 4.0), dpi=100)
+        fig = plt.figure(figsize=(3.2, 4.5), dpi=100)
+        ax = fig.add_subplot(111)
 
-        z_upper = self.cur_z['upper']
-        z_lower = self.cur_z['lower']
-        all_z = [z_upper, z_lower, 0]
-        z_min = min(all_z) - 5
-        z_max = max(all_z) + 5
-        if z_max - z_min < 10:
-            z_min, z_max = -5, 5
+        upper_pos = self.stage_gap / 2 + self.cur_z['upper']
+        lower_pos = -(self.stage_gap / 2) + self.cur_z['lower']
+        gap_now = upper_pos - lower_pos
 
-        ax_u = fig.add_axes([0.15, 0.08, 0.3, 0.82])
-        ax_u.set_xlim(0, 1)
-        ax_u.set_ylim(z_min, z_max)
-        ax_u.fill_between([0.1, 0.9], z_min, z_max, color='#E3F2FD', alpha=0.5)
-        ax_u.axhline(y=z_upper, color='#1565C0', linewidth=3)
-        ax_u.plot(0.5, z_upper, 's', color='#1565C0', markersize=10)
-        ax_u.text(0.5, z_max - (z_max - z_min) * 0.06, f"{z_upper:.1f} mm",
-                  ha='center', va='top', fontsize=10, fontweight='bold', color='#1565C0')
-        ax_u.set_title("Upper\nStage", fontsize=11, fontweight='bold', pad=8)
-        ax_u.set_xticks([])
-        ax_u.set_ylabel("Z (mm)", fontsize=9)
-        ax_u.tick_params(axis='y', labelsize=8)
-        ax_u.grid(axis='y', alpha=0.3)
+        margin = max(self.stage_gap * 0.3, 10)
+        y_top = self.stage_gap / 2 + margin
+        y_bot = -(self.stage_gap / 2) - margin
+
+        ax.set_xlim(-1, 1)
+        ax.set_ylim(y_bot, y_top)
+
+        ax.fill_between([-0.6, 0.6], upper_pos, y_top, color='#E3F2FD', alpha=0.4)
+        ax.fill_between([-0.6, 0.6], y_bot, lower_pos, color='#E8F5E9', alpha=0.4)
+
+        ax.axhline(y=upper_pos, color='#1565C0', linewidth=3.5)
+        ax.plot(0, upper_pos, 'v', color='#1565C0', markersize=12, zorder=5)
+        ax.text(0.65, upper_pos, f"Upper\n{self.cur_z['upper']:+.1f} mm",
+                va='center', fontsize=9, fontweight='bold', color='#1565C0')
+
+        ax.axhline(y=lower_pos, color='#2E7D32', linewidth=3.5)
+        ax.plot(0, lower_pos, '^', color='#2E7D32', markersize=12, zorder=5)
+        ax.text(0.65, lower_pos, f"Lower\n{self.cur_z['lower']:+.1f} mm",
+                va='center', fontsize=9, fontweight='bold', color='#2E7D32')
+
+        mid = (upper_pos + lower_pos) / 2
+        ax.annotate('', xy=(0.45, upper_pos), xytext=(0.45, lower_pos),
+                    arrowprops=dict(arrowstyle='<->', color='#FF5722', lw=1.5))
+        ax.text(-0.85, mid, f"Gap\n{gap_now:.1f}mm",
+                ha='center', va='center', fontsize=10, fontweight='bold', color='#FF5722',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFF3E0', edgecolor='#FF5722', alpha=0.9))
+
+        ax.axhline(y=0, color='gray', linewidth=0.8, linestyle='--', alpha=0.5)
+
+        ax.set_xticks([])
+        ax.set_ylabel("Position (mm)", fontsize=10)
+        ax.tick_params(axis='y', labelsize=9)
+        ax.set_title("Stage Position", fontsize=12, fontweight='bold')
+        ax.grid(axis='y', alpha=0.2)
         for spine in ['top', 'right', 'bottom']:
-            ax_u.spines[spine].set_visible(False)
+            ax.spines[spine].set_visible(False)
 
-        ax_l = fig.add_axes([0.58, 0.08, 0.3, 0.82])
-        ax_l.set_xlim(0, 1)
-        ax_l.set_ylim(z_min, z_max)
-        ax_l.fill_between([0.1, 0.9], z_min, z_max, color='#E8F5E9', alpha=0.5)
-        ax_l.axhline(y=z_lower, color='#2E7D32', linewidth=3)
-        ax_l.plot(0.5, z_lower, 's', color='#2E7D32', markersize=10)
-        ax_l.text(0.5, z_max - (z_max - z_min) * 0.06, f"{z_lower:.1f} mm",
-                  ha='center', va='top', fontsize=10, fontweight='bold', color='#2E7D32')
-        ax_l.set_title("Lower\nStage", fontsize=11, fontweight='bold', pad=8)
-        ax_l.set_xticks([])
-        ax_l.set_ylabel("")
-        ax_l.tick_params(axis='y', labelsize=8)
-        ax_l.grid(axis='y', alpha=0.3)
-        for spine in ['top', 'right', 'bottom']:
-            ax_l.spines[spine].set_visible(False)
-
+        fig.tight_layout()
         return self._fig_to_b64(fig)
 
     def _render_gantt(self) -> str:
