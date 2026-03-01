@@ -547,13 +547,12 @@ class MotorApp:
         self.page.update()
 
     def _set_home(self):
-        """현재 위치를 홈으로 설정, lower Z를 0 기준으로 리셋"""
-        offset_z = self.cur_z['lower']
-        self.home_z['upper'] = self.cur_z['upper'] - offset_z
+        """현재 위치를 홈으로 설정, 모든 좌표를 0으로 리셋"""
+        self.home_z['upper'] = 0.0
         self.home_z['lower'] = 0.0
-        self.home_angle['upper'] = self.cur_angle['upper']
-        self.home_angle['lower'] = self.cur_angle['lower']
-        self.cur_z['upper'] = self.cur_z['upper'] - offset_z
+        self.home_angle['upper'] = 0.0
+        self.home_angle['lower'] = 0.0
+        self.cur_z['upper'] = 0.0
         self.cur_z['lower'] = 0.0
         self.cur_angle['upper'] = 0.0
         self.cur_angle['lower'] = 0.0
