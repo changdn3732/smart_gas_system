@@ -976,12 +976,12 @@ class MotorApp:
                 ft.Container(content=nav_col, width=90, bgcolor="#e8e8e8", padding=6),
                 ft.Container(content=self.main_content, expand=True),
             ], spacing=0, expand=True),
-            expand=True,
+            expand=7,
         )
 
         right_panel = ft.Container(
             content=self.trend_image,
-            expand=True, bgcolor="#ffffff", border_radius=8, padding=5,
+            expand=3, bgcolor="#ffffff", border_radius=8, padding=5,
         )
 
         layout = ft.Row([left_panel, right_panel], expand=True, spacing=4)
