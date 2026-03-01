@@ -72,9 +72,12 @@ class MotorApp:
         self._load_home()
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
-        self.speed_mode = "low"       # "low" or "high"
-        self.low_speed = 500
-        self.high_speed = 3000
+        self.manual_speeds = [
+            {"label": "5 mm/s", "pps": 500},
+            {"label": "50 mm/s", "pps": 5000},
+            {"label": "100 mm/s", "pps": 10000},
+        ]
+        self.speed_mode_idx = 0
         self.motor_running = [False, False, False, False]
         self.motor_manual_dir = ['+', 'CW', '+', 'CW']
         self._motor_labels = [None, None, None, None]
@@ -714,7 +717,7 @@ class MotorApp:
         self.page.update()
 
     def _toggle_speed_mode(self):
-        self.speed_mode = "high" if self.speed_mode == "low" else "low"
+        self.speed_mode_idx = (self.speed_mode_idx + 1) % len(self.manual_speeds)
         self._render_schedule()
         self.page.update()
 
@@ -725,7 +728,7 @@ class MotorApp:
         self.motor_manual_dir[motor_idx] = direction
         self._highlight_motor(motor_idx, True)
         if self.motor_ctrl and self.motor_ctrl.connected:
-            speed = self.high_speed if self.speed_mode == "high" else self.low_speed
+            speed = self.manual_speeds[self.speed_mode_idx]["pps"]
             motor_id = MOTOR_IDS[motor_idx]
             mapped_dir = DIRECTION_MAP.get(direction, 'plus')
             try:
@@ -904,10 +907,11 @@ class MotorApp:
             ft.Row([estop_btn], alignment=ft.MainAxisAlignment.CENTER))
 
     def _render_manual_mode(self):
-        spd_bg = "#ff6600" if self.speed_mode == "high" else "#2196F3"
-        spd_label = f"HIGH ({self.high_speed})" if self.speed_mode == "high" else f"LOW ({self.low_speed})"
+        spd_colors = ["#2196F3", "#FF9800", "#f44336"]
+        cur_spd = self.manual_speeds[self.speed_mode_idx]
+        spd_bg = spd_colors[self.speed_mode_idx]
         speed_btn = ft.Container(
-            content=ft.Text(spd_label, size=14, weight=ft.FontWeight.BOLD,
+            content=ft.Text(cur_spd["label"], size=14, weight=ft.FontWeight.BOLD,
                             color="#ffffff", text_align=ft.TextAlign.CENTER),
             width=180, height=40, bgcolor=spd_bg, border_radius=8,
             alignment=ft.Alignment(0, 0),
@@ -1133,7 +1137,7 @@ class MotorApp:
                     spd_pps = self.history[mi][-1] if self.history[mi] else 0
                     d = self._get_direction_at(mi, self.schedule_time)
                 elif self.motor_running[mi]:
-                    spd_pps = self.low_speed if self.speed_mode == "low" else self.high_speed
+                    spd_pps = self.manual_speeds[self.speed_mode_idx]["pps"]
                     d = self.motor_manual_dir[mi]
                 mm_per_sec = spd_pps / PULSE_PER_MM
                 sign = -1 if d in ('-', 'minus', 'down') else 1
@@ -1147,7 +1151,7 @@ class MotorApp:
                     spd_pps = self.history[mi][-1] if self.history[mi] else 0
                     d = self._get_direction_at(mi, self.schedule_time)
                 elif self.motor_running[mi]:
-                    spd_pps = self.low_speed if self.speed_mode == "low" else self.high_speed
+                    spd_pps = self.manual_speeds[self.speed_mode_idx]["pps"]
                     d = self.motor_manual_dir[mi]
                 deg_per_sec = spd_pps * STEP_ANGLE
                 sign = -1 if d in ('CCW', 'ccw') else 1
