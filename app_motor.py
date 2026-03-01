@@ -59,6 +59,11 @@ class MotorApp:
         self.schedule_time = 0.0
         self.history = [[] for _ in range(4)]
 
+        self.motor_mode = "schedule"  # "schedule" or "manual"
+        self.speed_mode = "low"       # "low" or "high"
+        self.low_speed = 500
+        self.high_speed = 3000
+
     # ──────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────
@@ -492,6 +497,11 @@ class MotorApp:
         self._render_schedule()
         return ft.Container(content=self.schedule_content, expand=True, padding=10)
 
+    def _set_motor_mode(self, mode):
+        self.motor_mode = mode
+        self._render_schedule()
+        self.page.update()
+
     def _select_motor(self, idx):
         self.selected_motor = idx
         self._render_schedule()
@@ -520,8 +530,68 @@ class MotorApp:
         else:
             slot['dist_text'].value = "-"
 
+    def _toggle_speed_mode(self):
+        self.speed_mode = "high" if self.speed_mode == "low" else "low"
+        self._render_schedule()
+        self.page.update()
+
+    def _manual_motor_start(self, motor_idx, direction):
+        if not self.motor_ctrl or not self.motor_ctrl.connected:
+            return
+        speed = self.high_speed if self.speed_mode == "high" else self.low_speed
+        motor_id = MOTOR_IDS[motor_idx]
+        mapped_dir = DIRECTION_MAP.get(direction, 'plus')
+        try:
+            self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
+        except Exception as ex:
+            print(f"Manual start error: {ex}")
+
+    def _manual_motor_stop(self, motor_idx):
+        if not self.motor_ctrl or not self.motor_ctrl.connected:
+            return
+        motor_id = MOTOR_IDS[motor_idx]
+        try:
+            self.motor_ctrl.stop_motor(motor_id)
+        except Exception as ex:
+            print(f"Manual stop error: {ex}")
+
+    def _make_jog_button(self, label, motor_idx, direction, width=100, height=60):
+        """누르고 있는 동안 모터 작동, 떼면 정지"""
+        return ft.GestureDetector(
+            content=ft.Container(
+                content=ft.Text(label, size=14, weight=ft.FontWeight.BOLD,
+                                color="#ffffff", text_align=ft.TextAlign.CENTER),
+                width=width, height=height, bgcolor="#003366", border_radius=8,
+                alignment=ft.Alignment(0, 0),
+                border=ft.Border.all(2, "#001a33"),
+            ),
+            on_tap_down=lambda e, mi=motor_idx, d=direction: self._manual_motor_start(mi, d),
+            on_tap_up=lambda e, mi=motor_idx: self._manual_motor_stop(mi),
+        )
+
     def _render_schedule(self):
         self.schedule_content.controls.clear()
+
+        mode_row = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=8)
+        for mode, label in [("schedule", "Schedule"), ("manual", "Manual")]:
+            bg = "#003366" if self.motor_mode == mode else "#cccccc"
+            fg = "#ffffff" if self.motor_mode == mode else "#333333"
+            mode_row.controls.append(ft.Container(
+                content=ft.Text(label, size=13, weight=ft.FontWeight.BOLD,
+                                color=fg, text_align=ft.TextAlign.CENTER),
+                width=100, height=36, bgcolor=bg, border_radius=6,
+                alignment=ft.Alignment(0, 0),
+                on_click=lambda e, m=mode: self._set_motor_mode(m),
+            ))
+        self.schedule_content.controls.append(mode_row)
+        self.schedule_content.controls.append(ft.Divider(height=1))
+
+        if self.motor_mode == "schedule":
+            self._render_schedule_mode()
+        else:
+            self._render_manual_mode()
+
+    def _render_schedule_mode(self):
         C_W, C_H = 80, 34
 
         motor_btns = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=6)
@@ -566,11 +636,7 @@ class MotorApp:
                 f"S{step + 1}", self.step_enabled[m][step],
                 lambda e, mi=m, si=step: self._toggle_step(mi, si))
             data_rows.append([
-                toggle,
-                slot['speed'],
-                slot['dur'],
-                slot['dir_dd'],
-                slot['dist_text'],
+                toggle, slot['speed'], slot['dur'], slot['dir_dd'], slot['dist_text'],
             ])
 
         table = self._build_table(
@@ -591,6 +657,47 @@ class MotorApp:
                                            on_click=lambda e: self._start_schedule())
         btn_row.controls.extend([self.apply_btn, self.start_btn])
         self.schedule_content.controls.append(btn_row)
+
+        self._status_text = ft.Text("", size=12)
+        self.schedule_content.controls.append(self._status_text)
+
+    def _render_manual_mode(self):
+        spd_bg = "#ff6600" if self.speed_mode == "high" else "#2196F3"
+        spd_label = f"HIGH ({self.high_speed})" if self.speed_mode == "high" else f"LOW ({self.low_speed})"
+        speed_btn = ft.Container(
+            content=ft.Text(spd_label, size=14, weight=ft.FontWeight.BOLD,
+                            color="#ffffff", text_align=ft.TextAlign.CENTER),
+            width=180, height=40, bgcolor=spd_bg, border_radius=8,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: self._toggle_speed_mode(),
+        )
+        self.schedule_content.controls.append(
+            ft.Row([speed_btn], alignment=ft.MainAxisAlignment.CENTER))
+        self.schedule_content.controls.append(ft.Container(height=10))
+
+        for mi in range(4):
+            mt = MOTOR_TYPES[mi]
+            if mt == 'linear':
+                dirs = [('+', '+'), ('-', '-')]
+            else:
+                dirs = [('CW', 'CW'), ('CCW', 'CCW')]
+
+            label = ft.Text(MOTOR_LABELS[mi], size=13, weight=ft.FontWeight.BOLD,
+                            width=110, text_align=ft.TextAlign.RIGHT)
+            btns = [self._make_jog_button(d[0], mi, d[1], width=90, height=50) for d in dirs]
+
+            row = ft.Row(
+                [label, ft.Container(width=10)] + btns,
+                alignment=ft.MainAxisAlignment.CENTER, spacing=8,
+            )
+            self.schedule_content.controls.append(row)
+            self.schedule_content.controls.append(ft.Container(height=6))
+
+        self.schedule_content.controls.append(ft.Divider())
+        stop_btn = ft.ElevatedButton("STOP ALL", bgcolor="#ff0000", color="white",
+                                     on_click=lambda e: self._emergency_stop())
+        self.schedule_content.controls.append(
+            ft.Row([stop_btn], alignment=ft.MainAxisAlignment.CENTER))
 
         self._status_text = ft.Text("", size=12)
         self.schedule_content.controls.append(self._status_text)
