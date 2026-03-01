@@ -9,7 +9,6 @@ import base64
 import io
 import sys
 import os
-from collections import deque
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -60,16 +59,7 @@ class MotorApp:
         self.schedule_time = 0.0
         self.history = [[] for _ in range(4)]
 
-        # 절대좌표 추적 (최근 30초, 100ms 간격 → 300 samples)
-        self._pos_max_len = 300
-        self.abs_z = {
-            'upper': deque(maxlen=self._pos_max_len),
-            'lower': deque(maxlen=self._pos_max_len),
-        }
-        self.abs_angle = {
-            'upper': deque(maxlen=self._pos_max_len),
-            'lower': deque(maxlen=self._pos_max_len),
-        }
+        # 절대좌표 추적
         self.cur_z = {'upper': 0.0, 'lower': 0.0}
         self.cur_angle = {'upper': 0.0, 'lower': 0.0}
         self._graph_loop_running = False
@@ -983,55 +973,57 @@ class MotorApp:
 
         return self._fig_to_b64(fig)
 
-    def _render_z_trend(self) -> str:
-        """Z 절대좌표 추이 (최근 30초)"""
+    def _render_gantt(self) -> str:
+        """스케줄 간트 차트 (타임라인)"""
         if not plt:
             return ""
-        fig = plt.figure(figsize=(3.8, 2.2), dpi=100)
+        fig = plt.figure(figsize=(3.8, 2.4), dpi=100)
         ax = fig.add_subplot(111)
 
-        n_u = len(self.abs_z['upper'])
-        n_l = len(self.abs_z['lower'])
-        if n_u > 0:
-            t = [i * 0.1 for i in range(-n_u + 1, 1)]
-            ax.plot(t, list(self.abs_z['upper']), '-', color='#1565C0', linewidth=2, label='Upper')
-        if n_l > 0:
-            t = [i * 0.1 for i in range(-n_l + 1, 1)]
-            ax.plot(t, list(self.abs_z['lower']), '-', color='#2E7D32', linewidth=2, label='Lower')
+        global_h = self._get_global_total_duration()
+        if global_h <= 0:
+            global_h = 0.01
+        total_s = max(int(global_h * 3600), 10)
 
-        ax.set_xlim(-30, 0)
-        ax.set_xlabel("Time (s)", fontsize=9)
-        ax.set_ylabel("Z (mm)", fontsize=9)
-        ax.set_title("Z Position", fontsize=11, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=8)
-        ax.legend(loc="upper left", fontsize=8)
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        return self._fig_to_b64(fig)
+        if total_s < 60:
+            t_unit, t_div = "s", 1.0
+        elif total_s < 3600:
+            t_unit, t_div = "min", 60.0
+        else:
+            t_unit, t_div = "h", 3600.0
 
-    def _render_angle_trend(self) -> str:
-        """각도 절대좌표 추이 (최근 30초)"""
-        if not plt:
-            return ""
-        fig = plt.figure(figsize=(3.8, 2.2), dpi=100)
-        ax = fig.add_subplot(111)
+        bar_colors = ['#42A5F5', '#66BB6A', '#FFA726', '#AB47BC']
+        gantt_labels = ['U-Stage', 'L-Stage', 'U-Rotate', 'L-Rotate']
+        gantt_order = [0, 2, 1, 3]
 
-        n_u = len(self.abs_angle['upper'])
-        n_l = len(self.abs_angle['lower'])
-        if n_u > 0:
-            t = [i * 0.1 for i in range(-n_u + 1, 1)]
-            ax.plot(t, list(self.abs_angle['upper']), '-', color='#E65100', linewidth=2, label='Upper')
-        if n_l > 0:
-            t = [i * 0.1 for i in range(-n_l + 1, 1)]
-            ax.plot(t, list(self.abs_angle['lower']), '-', color='#7B1FA2', linewidth=2, label='Lower')
+        for row, mi in enumerate(gantt_order):
+            segs = self._get_schedule_segments(mi)
+            for (t0, t1, spd, d) in segs:
+                if spd > 0:
+                    x0 = t0 * 3600 / t_div
+                    w = (t1 - t0) * 3600 / t_div
+                    ax.barh(row, w, left=x0, height=0.6,
+                            color=bar_colors[row], alpha=0.85,
+                            edgecolor='#333333', linewidth=0.5)
+                    mid = x0 + w / 2
+                    label = self._seg_label(mi, spd, t1 - t0, d)
+                    fontsize = 6 if len(label) > 10 else 7
+                    ax.text(mid, row, label, ha='center', va='center',
+                            fontsize=fontsize, color='white', fontweight='bold')
 
-        ax.set_xlim(-30, 0)
-        ax.set_xlabel("Time (s)", fontsize=9)
-        ax.set_ylabel("Angle (°)", fontsize=9)
-        ax.set_title("Angle Position", fontsize=11, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=8)
-        ax.legend(loc="upper left", fontsize=8)
-        ax.grid(True, alpha=0.3)
+        if self.schedule_running and self.history[0]:
+            elapsed_disp = len(self.history[0]) / t_div
+            ax.axvline(x=elapsed_disp, color='red', linewidth=1.5, linestyle='-', alpha=0.8)
+
+        ax.set_yticks(range(4))
+        ax.set_yticklabels(gantt_labels, fontsize=9)
+        ax.set_xlim(0, total_s / t_div)
+        ax.xaxis.tick_top()
+        ax.tick_params(axis='x', labelsize=8)
+        ax.invert_yaxis()
+        ax.grid(axis='x', alpha=0.3)
+        ax.set_axisbelow(True)
+        ax.set_title(f"Timeline ({t_unit})", fontsize=11, fontweight='bold', pad=16)
         fig.tight_layout()
         return self._fig_to_b64(fig)
 
@@ -1051,7 +1043,6 @@ class MotorApp:
                 mm_per_sec = spd_pps / PULSE_PER_MM
                 sign = -1 if d in ('-', 'minus', 'down') else 1
                 self.cur_z[key] += sign * mm_per_sec * dt
-            self.abs_z[key].append(self.cur_z[key])
 
         for mi, key in [(1, 'upper'), (3, 'lower')]:
             if self.motor_running[mi] or (self.schedule_running and self.history[mi]):
@@ -1066,17 +1057,14 @@ class MotorApp:
                 deg_per_sec = spd_pps * STEP_ANGLE
                 sign = -1 if d in ('CCW', 'ccw') else 1
                 self.cur_angle[key] += sign * deg_per_sec * dt
-            self.abs_angle[key].append(self.cur_angle[key])
 
     def _update_all_graphs(self):
-        """3개 그래프 모두 갱신"""
+        """간트 차트 + 스테이지 다이어그램 갱신"""
         try:
+            self.gantt_img.src = self._render_gantt()
+            self.gantt_img.update()
             self.stage_diagram_img.src = self._render_stage_diagram()
             self.stage_diagram_img.update()
-            self.z_trend_img.src = self._render_z_trend()
-            self.z_trend_img.update()
-            self.angle_trend_img.src = self._render_angle_trend()
-            self.angle_trend_img.update()
         except Exception:
             pass
 
@@ -1255,9 +1243,8 @@ class MotorApp:
             "QVQIHWNgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAAtJREFUCB1jYAACAAAFAAGbfEHV"
             "AAAAAElFTkSuQmCC"
         )
+        self.gantt_img = ft.Image(src=placeholder_b64, width=380, height=240)
         self.stage_diagram_img = ft.Image(src=placeholder_b64, width=320, height=400)
-        self.z_trend_img = ft.Image(src=placeholder_b64, width=380, height=220)
-        self.angle_trend_img = ft.Image(src=placeholder_b64, width=380, height=220)
 
         self.current_view = "schedule"
 
@@ -1278,9 +1265,8 @@ class MotorApp:
 
         right_panel = ft.Container(
             content=ft.Column([
+                self.gantt_img,
                 self.stage_diagram_img,
-                self.z_trend_img,
-                self.angle_trend_img,
             ], spacing=4, scroll=ft.ScrollMode.AUTO, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
             expand=3, bgcolor="#ffffff", border_radius=8, padding=5,
         )
