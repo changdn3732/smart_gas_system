@@ -547,15 +547,11 @@ class MotorApp:
         self.page.update()
 
     def _set_home(self):
-        """현재 위치를 홈으로 설정, 모든 좌표를 0으로 리셋"""
-        self.home_z['upper'] = 0.0
-        self.home_z['lower'] = 0.0
-        self.home_angle['upper'] = 0.0
-        self.home_angle['lower'] = 0.0
-        self.cur_z['upper'] = 0.0
-        self.cur_z['lower'] = 0.0
-        self.cur_angle['upper'] = 0.0
-        self.cur_angle['lower'] = 0.0
+        """현재 위치를 홈으로 저장"""
+        self.home_z['upper'] = self.cur_z['upper']
+        self.home_z['lower'] = self.cur_z['lower']
+        self.home_angle['upper'] = self.cur_angle['upper']
+        self.home_angle['lower'] = self.cur_angle['lower']
         self._save_home()
         self._update_all_graphs()
         if hasattr(self, '_status_text') and self._status_text:
@@ -564,7 +560,7 @@ class MotorApp:
         self.page.update()
 
     def _go_home(self):
-        """홈 위치로 복귀 (시뮬레이션: 즉시 위치 리셋)"""
+        """홈 위치로 복귀"""
         self.cur_z['upper'] = self.home_z['upper']
         self.cur_z['lower'] = self.home_z['lower']
         self.cur_angle['upper'] = self.home_angle['upper']
@@ -1029,14 +1025,17 @@ class MotorApp:
         return f"data:image/png;base64,{base64.b64encode(buf.read()).decode('ascii')}"
 
     def _render_stage_diagram(self) -> str:
-        """통합 스테이지 도식: 상부(위)와 하부(아래) Z 위치를 하나의 세로축에 표시"""
+        """통합 스테이지 도식: 홈 대비 이동거리 표시"""
         if not plt:
             return ""
         fig = plt.figure(figsize=(3.2, 4.5), dpi=100)
         ax = fig.add_subplot(111)
 
-        lower_pos = 0.0 + self.cur_z['lower']
-        upper_pos = self.stage_gap + self.cur_z['upper']
+        dist_upper = self.cur_z['upper'] - self.home_z['upper']
+        dist_lower = self.cur_z['lower'] - self.home_z['lower']
+
+        lower_pos = 0.0 + dist_lower
+        upper_pos = self.stage_gap + dist_upper
         gap_now = upper_pos - lower_pos
 
         margin = max(self.stage_gap * 0.3, 10)
@@ -1051,12 +1050,12 @@ class MotorApp:
 
         ax.axhline(y=upper_pos, color='#1565C0', linewidth=3.5)
         ax.plot(0, upper_pos, 'v', color='#1565C0', markersize=12, zorder=5)
-        ax.text(0.65, upper_pos, f"Upper\n{self.cur_z['upper']:+.1f} mm",
+        ax.text(0.65, upper_pos, f"Upper\n{dist_upper:+.1f} mm",
                 va='center', fontsize=9, fontweight='bold', color='#1565C0')
 
         ax.axhline(y=lower_pos, color='#2E7D32', linewidth=3.5)
         ax.plot(0, lower_pos, '^', color='#2E7D32', markersize=12, zorder=5)
-        ax.text(0.65, lower_pos, f"Lower\n{self.cur_z['lower']:+.1f} mm",
+        ax.text(0.65, lower_pos, f"Lower\n{dist_lower:+.1f} mm",
                 va='center', fontsize=9, fontweight='bold', color='#2E7D32')
 
         mid = (upper_pos + lower_pos) / 2
@@ -1067,6 +1066,7 @@ class MotorApp:
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFF3E0', edgecolor='#FF5722', alpha=0.9))
 
         ax.axhline(y=0, color='gray', linewidth=0.8, linestyle='--', alpha=0.5)
+        ax.axhline(y=self.stage_gap, color='gray', linewidth=0.8, linestyle='--', alpha=0.5)
 
         ax.set_xticks([])
         ax.set_ylabel("Position (mm)", fontsize=10)
