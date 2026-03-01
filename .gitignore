@@ -5,3 +5,4 @@ dist/
 build/
 *.spec
 .env
+motor_home.json

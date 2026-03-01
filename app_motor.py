@@ -7,6 +7,7 @@ import asyncio
 import math
 import base64
 import io
+import json
 import sys
 import os
 
@@ -60,13 +61,15 @@ class MotorApp:
         self.history = [[] for _ in range(4)]
 
         # 절대좌표 추적
-        self.stage_gap = 100.0  # 상부-하부 스테이지 초기 간격 (mm)
+        self._config_path = os.path.join(os.path.dirname(__file__), 'motor_home.json')
+        self.stage_gap = 100.0
         self.cur_z = {'upper': 0.0, 'lower': 0.0}
         self.cur_angle = {'upper': 0.0, 'lower': 0.0}
         self.home_z = {'upper': 0.0, 'lower': 0.0}
         self.home_angle = {'upper': 0.0, 'lower': 0.0}
         self._homing = False
         self._graph_loop_running = False
+        self._load_home()
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
         self.speed_mode = "low"       # "low" or "high"
@@ -77,6 +80,34 @@ class MotorApp:
         self._motor_labels = [None, None, None, None]
         self._motor_rows = [None, None, None, None]
         self.speed_unit = "mm/s"  # "mm/s", "cm/s", "m/s"
+
+    # ──────────────────────────────────────────────
+    # Home position persistence
+    # ──────────────────────────────────────────────
+
+    def _load_home(self):
+        try:
+            with open(self._config_path, 'r') as f:
+                data = json.load(f)
+            self.home_z = data.get('home_z', {'upper': 0.0, 'lower': 0.0})
+            self.home_angle = data.get('home_angle', {'upper': 0.0, 'lower': 0.0})
+            self.stage_gap = data.get('stage_gap', 100.0)
+            self.cur_z = dict(self.home_z)
+            self.cur_angle = dict(self.home_angle)
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            pass
+
+    def _save_home(self):
+        data = {
+            'home_z': self.home_z,
+            'home_angle': self.home_angle,
+            'stage_gap': self.stage_gap,
+        }
+        try:
+            with open(self._config_path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as ex:
+            print(f"Home save error: {ex}")
 
     # ──────────────────────────────────────────────
     # Helpers
@@ -472,6 +503,7 @@ class MotorApp:
             self.stage_gap = float(self._gap_input.value)
         except (ValueError, TypeError):
             self.stage_gap = 100.0
+        self._save_home()
         self._update_all_graphs()
         self.page.update()
 
@@ -522,9 +554,10 @@ class MotorApp:
         self.cur_z['lower'] = 0.0
         self.cur_angle['upper'] = 0.0
         self.cur_angle['lower'] = 0.0
+        self._save_home()
         self._update_all_graphs()
         if hasattr(self, '_status_text') and self._status_text:
-            self._status_text.value = "Home position set"
+            self._status_text.value = "Home position saved"
             self._status_text.color = "#607D8B"
         self.page.update()
 
