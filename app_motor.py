@@ -435,7 +435,7 @@ class MotorApp:
         disconnect_btn = ft.ElevatedButton("Disconnect", bgcolor="#f44336", color="white",
                                            on_click=lambda e: self._disconnect_motor())
         stop_all_btn = ft.ElevatedButton("STOP ALL", bgcolor="#ff0000", color="white",
-                                         on_click=lambda e: self._emergency_stop())
+                                         on_click=lambda e: self._confirm_emergency_stop())
 
         return ft.Container(
             content=ft.Column([
@@ -484,6 +484,30 @@ class MotorApp:
             self.motor_ctrl = None
         self._conn_status.value = "Disconnected"
         self._conn_status.color = "red"
+        self.page.update()
+
+    def _confirm_emergency_stop(self):
+        def _do_stop(e):
+            self._estop_dialog.open = False
+            self.page.update()
+            self._emergency_stop()
+
+        def _cancel(e):
+            self._estop_dialog.open = False
+            self.page.update()
+
+        self._estop_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Emergency Stop", color="#ff0000", weight=ft.FontWeight.BOLD),
+            content=ft.Text("모든 모터를 즉시 정지합니다.\n계속하시겠습니까?", size=14),
+            actions=[
+                ft.TextButton("Cancel", on_click=_cancel),
+                ft.ElevatedButton("STOP", bgcolor="#ff0000", color="white", on_click=_do_stop),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.overlay.append(self._estop_dialog)
+        self._estop_dialog.open = True
         self.page.update()
 
     def _emergency_stop(self):
@@ -774,13 +798,22 @@ class MotorApp:
                                            on_click=lambda e: self._apply_schedule())
         self.start_btn = ft.ElevatedButton("Start", bgcolor="#4CAF50", color="white",
                                            on_click=lambda e: self._start_schedule())
-        estop_btn = ft.ElevatedButton("STOP", bgcolor="#ff0000", color="white",
-                                      on_click=lambda e: self._emergency_stop())
-        btn_row.controls.extend([self.apply_btn, self.start_btn, estop_btn])
+        btn_row.controls.extend([self.apply_btn, self.start_btn])
         self.schedule_content.controls.append(btn_row)
 
         self._status_text = ft.Text("", size=12)
         self.schedule_content.controls.append(self._status_text)
+
+        self.schedule_content.controls.append(ft.Container(height=30))
+        estop_btn = ft.Container(
+            content=ft.Text("EMERGENCY STOP", size=14, weight=ft.FontWeight.BOLD,
+                            color="#ffffff", text_align=ft.TextAlign.CENTER),
+            width=200, height=44, bgcolor="#ff0000", border_radius=8,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: self._confirm_emergency_stop(),
+        )
+        self.schedule_content.controls.append(
+            ft.Row([estop_btn], alignment=ft.MainAxisAlignment.CENTER))
 
     def _render_manual_mode(self):
         spd_bg = "#ff6600" if self.speed_mode == "high" else "#2196F3"
@@ -825,7 +858,7 @@ class MotorApp:
 
         self.schedule_content.controls.append(ft.Divider())
         stop_btn = ft.ElevatedButton("STOP ALL", bgcolor="#ff0000", color="white",
-                                     on_click=lambda e: self._emergency_stop())
+                                     on_click=lambda e: self._confirm_emergency_stop())
         self.schedule_content.controls.append(
             ft.Row([stop_btn], alignment=ft.MainAxisAlignment.CENTER))
 
