@@ -638,15 +638,17 @@ class MotorApp:
         self._render_schedule()
         self.page.update()
 
+    MAX_PPS = 8000
+
     def _speed_to_pps(self, val: float) -> int:
-        """사용자 입력 속도(mm/s, cm/s, m/s) → pps 변환"""
+        """사용자 입력 속도(mm/s, cm/s, m/s) → pps 변환 (최대 8000pps)"""
         if self.speed_unit == "cm/s":
             mm_per_sec = val * 10.0
         elif self.speed_unit == "m/s":
             mm_per_sec = val * 1000.0
         else:
             mm_per_sec = val
-        return max(0, int(mm_per_sec * PULSE_PER_MM))
+        return min(self.MAX_PPS, max(0, int(mm_per_sec * PULSE_PER_MM)))
 
     def _on_step_change(self, motor_idx, step_idx):
         self._update_distance(motor_idx, step_idx)
@@ -665,20 +667,26 @@ class MotorApp:
         if raw > 0 and dur_h > 0:
             if mt == 'linear':
                 pps = self._speed_to_pps(raw)
+                clamped = pps >= self.MAX_PPS
                 dist_mm = speed_pps_to_mm_per_sec(pps) * dur_h * 3600
+                warn = "⚠" if clamped else ""
                 if self.speed_unit == "m/s":
-                    slot['dist_text'].value = f"{dist_mm / 1000:.3f} m"
+                    slot['dist_text'].value = f"{warn}{dist_mm / 1000:.3f} m"
                 elif self.speed_unit == "cm/s":
-                    slot['dist_text'].value = f"{dist_mm / 10:.2f} cm"
+                    slot['dist_text'].value = f"{warn}{dist_mm / 10:.2f} cm"
                 else:
-                    slot['dist_text'].value = f"{dist_mm:.1f} mm"
+                    slot['dist_text'].value = f"{warn}{dist_mm:.1f} mm"
             else:
+                pps = min(self.MAX_PPS, max(0, int(raw / STEP_ANGLE)))
+                clamped = pps >= self.MAX_PPS
+                actual_deg_s = speed_pps_to_deg_per_sec(pps)
                 seconds = dur_h * 3600
-                deg = raw * seconds
+                deg = actual_deg_s * seconds
+                warn = "⚠" if clamped else ""
                 if deg >= 360:
-                    slot['dist_text'].value = f"{deg / 360:.2f} rev"
+                    slot['dist_text'].value = f"{warn}{deg / 360:.2f} rev"
                 else:
-                    slot['dist_text'].value = f"{deg:.1f}°"
+                    slot['dist_text'].value = f"{warn}{deg:.1f}°"
         else:
             slot['dist_text'].value = "-"
 
@@ -1204,7 +1212,7 @@ class MotorApp:
         if mt == 'linear':
             return self._speed_to_pps(raw)
         else:
-            return max(0, int(raw / STEP_ANGLE))
+            return min(self.MAX_PPS, max(0, int(raw / STEP_ANGLE)))
 
     def _get_speed_at(self, motor_idx, t_hours) -> float:
         steps_list = []
