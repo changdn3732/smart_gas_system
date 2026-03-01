@@ -535,6 +535,33 @@ class MotorApp:
         else:
             slot['dist_text'].value = "-"
 
+    def _make_dir_toggle(self, motor_idx, step_idx):
+        """방향 아이콘 토글 버튼"""
+        mt = MOTOR_TYPES[motor_idx]
+        cur = self.steps[motor_idx][step_idx].get('dir_dd', '+')
+        if mt == 'linear':
+            icon = ft.Icons.ARROW_UPWARD if cur == '+' else ft.Icons.ARROW_DOWNWARD
+            color = "#2196F3" if cur == '+' else "#FF5722"
+        else:
+            icon = ft.Icons.ROTATE_RIGHT if cur == 'CW' else ft.Icons.ROTATE_LEFT
+            color = "#2196F3" if cur == 'CW' else "#FF5722"
+        return ft.Container(
+            content=ft.Icon(icon, color="#ffffff", size=20),
+            width=36, height=30, bgcolor=color, border_radius=4,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e, mi=motor_idx, si=step_idx: self._toggle_dir(mi, si),
+        )
+
+    def _toggle_dir(self, motor_idx, step_idx):
+        mt = MOTOR_TYPES[motor_idx]
+        cur = self.steps[motor_idx][step_idx].get('dir_dd', '+')
+        if mt == 'linear':
+            self.steps[motor_idx][step_idx]['dir_dd'] = '-' if cur == '+' else '+'
+        else:
+            self.steps[motor_idx][step_idx]['dir_dd'] = 'CCW' if cur == 'CW' else 'CW'
+        self._render_schedule()
+        self.page.update()
+
     def _toggle_speed_mode(self):
         self.speed_mode = "high" if self.speed_mode == "low" else "low"
         self._render_schedule()
@@ -659,10 +686,7 @@ class MotorApp:
                 slot['dur'] = self._make_duration_input(
                     "00:00:30", w=C_W, h=C_H,
                     on_change=lambda e, mi=m, si=step: self._on_step_change(mi, si))
-                slot['dir_dd'] = ft.Dropdown(
-                    width=65, value=dir_opts[0], text_size=12, dense=True,
-                    options=[ft.DropdownOption(d) for d in dir_opts],
-                )
+                slot['dir_dd'] = dir_opts[0]
                 slot['dist_text'] = ft.Text("-", size=11, text_align=ft.TextAlign.CENTER)
             self._update_distance(m, step)
 
@@ -672,14 +696,15 @@ class MotorApp:
             toggle = self._make_step_toggle(
                 f"S{step + 1}", self.step_enabled[m][step],
                 lambda e, mi=m, si=step: self._toggle_step(mi, si))
+            dir_btn = self._make_dir_toggle(m, step)
             data_rows.append([
-                toggle, slot['speed'], slot['dur'], slot['dir_dd'], slot['dist_text'],
+                toggle, slot['speed'], slot['dur'], dir_btn, slot['dist_text'],
             ])
 
         table = self._build_table(
-            headers=["Step", "Speed (pps)", "Duration", "Dir", dist_header],
+            headers=["Step", "Speed", "Duration", "Dir", dist_header],
             data_rows=data_rows,
-            col_widths=[50, C_W, C_W, 65, 90],
+            col_widths=[50, C_W, C_W, 50, 90],
             row_height=C_H,
         )
         self.schedule_content.controls.append(
@@ -767,7 +792,7 @@ class MotorApp:
             except (ValueError, TypeError):
                 spd = 0
             dur = self._parse_duration_to_hours(df.value) if df and df.value else 0.0
-            d = dd.value if dd else '+'
+            d = dd if isinstance(dd, str) else (dd.value if dd else '+')
             if dur > 0:
                 segments.append((cum, cum + dur, spd, d))
                 cum += dur
@@ -776,22 +801,25 @@ class MotorApp:
     def _get_global_total_duration(self) -> float:
         return max(self._get_total_duration(mi) for mi in range(4))
 
+    @staticmethod
+    def _dir_arrow(direction: str) -> str:
+        return {'+': '↑', '-': '↓', 'CW': '↻', 'CCW': '↺'}.get(direction, direction)
+
     def _seg_label(self, motor_idx, spd, dur_h, direction):
-        """타임라인 바 안에 표시할 텍스트: 방향 + 거리/각도"""
+        """타임라인 바 안에 표시할 텍스트: 방향아이콘 + 거리/각도"""
+        arrow = self._dir_arrow(direction)
         seconds = dur_h * 3600
         mt = MOTOR_TYPES[motor_idx]
         if mt == 'linear':
             dist_mm = speed_pps_to_mm_per_sec(int(spd)) * seconds
             if dist_mm >= 1.0:
-                dist_str = f"{dist_mm:.1f}mm"
-            else:
-                dist_str = f"{dist_mm * 1000:.0f}μm"
-            return f"{direction} {dist_str}"
+                return f"{arrow} {dist_mm:.1f}mm"
+            return f"{arrow} {dist_mm * 1000:.0f}μm"
         else:
             deg = speed_pps_to_deg_per_sec(int(spd)) * seconds
             if deg >= 360:
-                return f"{direction} {deg / 360:.1f}rev"
-            return f"{direction} {deg:.0f}°"
+                return f"{arrow} {deg / 360:.1f}rev"
+            return f"{arrow} {deg:.0f}°"
 
     def _render_trend(self) -> str:
         if not plt:
@@ -947,7 +975,7 @@ class MotorApp:
             df = slot.get('dur')
             dd = slot.get('dir_dd')
             dur = self._parse_duration_to_hours(df.value) if df and df.value else 0.0
-            d = dd.value if dd else '+'
+            d = dd if isinstance(dd, str) else (dd.value if dd else '+')
             steps_list.append((d, dur))
 
         if not steps_list:
