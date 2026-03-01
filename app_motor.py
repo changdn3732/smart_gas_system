@@ -63,6 +63,9 @@ class MotorApp:
         self.speed_mode = "low"       # "low" or "high"
         self.low_speed = 500
         self.high_speed = 3000
+        self.motor_running = [False, False, False, False]
+        self._motor_labels = [None, None, None, None]
+        self._motor_rows = [None, None, None, None]
 
     # ──────────────────────────────────────────────
     # Helpers
@@ -543,6 +546,8 @@ class MotorApp:
         mapped_dir = DIRECTION_MAP.get(direction, 'plus')
         try:
             self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
+            self.motor_running[motor_idx] = True
+            self._highlight_motor(motor_idx, True)
         except Exception as ex:
             print(f"Manual start error: {ex}")
 
@@ -554,6 +559,21 @@ class MotorApp:
             self.motor_ctrl.stop_motor(motor_id)
         except Exception as ex:
             print(f"Manual stop error: {ex}")
+        self.motor_running[motor_idx] = False
+        self._highlight_motor(motor_idx, False)
+
+    def _highlight_motor(self, motor_idx, active):
+        lbl = self._motor_labels[motor_idx]
+        row_c = self._motor_rows[motor_idx]
+        if lbl:
+            lbl.color = "#00E676" if active else "#333333"
+            lbl.value = f"● {MOTOR_LABELS[motor_idx]}" if active else MOTOR_LABELS[motor_idx]
+        if row_c:
+            row_c.bgcolor = "rgba(0,230,118,0.12)" if active else "transparent"
+        try:
+            self.page.update()
+        except Exception:
+            pass
 
     def _make_jog_button(self, label, motor_idx, direction, width=100, height=60):
         """누르고 있는 동안 모터 작동, 떼면 정지"""
@@ -682,15 +702,24 @@ class MotorApp:
             else:
                 dirs = [('CW', 'CW'), ('CCW', 'CCW')]
 
-            label = ft.Text(MOTOR_LABELS[mi], size=13, weight=ft.FontWeight.BOLD,
-                            width=110, text_align=ft.TextAlign.RIGHT)
+            is_active = self.motor_running[mi]
+            lbl_text = f"● {MOTOR_LABELS[mi]}" if is_active else MOTOR_LABELS[mi]
+            lbl_color = "#00E676" if is_active else "#333333"
+            label = ft.Text(lbl_text, size=13, weight=ft.FontWeight.BOLD,
+                            width=110, text_align=ft.TextAlign.RIGHT, color=lbl_color)
+            self._motor_labels[mi] = label
             btns = [self._make_jog_button(d[0], mi, d[1], width=90, height=50) for d in dirs]
 
-            row = ft.Row(
-                [label, ft.Container(width=10)] + btns,
-                alignment=ft.MainAxisAlignment.CENTER, spacing=8,
+            row_bg = "rgba(0,230,118,0.12)" if is_active else "transparent"
+            row_container = ft.Container(
+                content=ft.Row(
+                    [label, ft.Container(width=10)] + btns,
+                    alignment=ft.MainAxisAlignment.CENTER, spacing=8,
+                ),
+                bgcolor=row_bg, border_radius=6, padding=4,
             )
-            self.schedule_content.controls.append(row)
+            self._motor_rows[mi] = row_container
+            self.schedule_content.controls.append(row_container)
             self.schedule_content.controls.append(ft.Container(height=6))
 
         self.schedule_content.controls.append(ft.Divider())
