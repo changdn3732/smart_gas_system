@@ -547,7 +547,10 @@ class MotorApp:
         self.page.update()
 
     def _set_home(self):
-        """현재 위치를 홈으로 저장"""
+        """현재 위치를 홈으로 저장, gap도 현재 간격으로 갱신"""
+        dist_upper = self.cur_z['upper'] - self.home_z.get('upper', 0.0)
+        dist_lower = self.cur_z['lower'] - self.home_z.get('lower', 0.0)
+        self.stage_gap = max(0.1, self.stage_gap + dist_upper - dist_lower)
         self.home_z['upper'] = self.cur_z['upper']
         self.home_z['lower'] = self.cur_z['lower']
         self.home_angle['upper'] = self.cur_angle['upper']
@@ -555,7 +558,7 @@ class MotorApp:
         self._save_home()
         self._update_all_graphs()
         if hasattr(self, '_status_text') and self._status_text:
-            self._status_text.value = "Home position saved"
+            self._status_text.value = f"Home saved (Gap: {self.stage_gap:.1f}mm)"
             self._status_text.color = "#607D8B"
         self.page.update()
 
