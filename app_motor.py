@@ -1178,12 +1178,16 @@ class MotorApp:
             pass
 
     async def _graph_loop(self):
-        """100ms 주기 그래프 갱신 루프"""
+        """위치 계산은 100ms, 그래프 렌더링은 500ms 주기"""
         self._graph_loop_running = True
+        render_counter = 0
         while self._graph_loop_running:
             try:
                 self._update_abs_position()
-                self._update_all_graphs()
+                render_counter += 1
+                if render_counter >= 5:
+                    self._update_all_graphs()
+                    render_counter = 0
             except Exception as ex:
                 print(f"Graph loop error: {ex}")
             await asyncio.sleep(0.1)
