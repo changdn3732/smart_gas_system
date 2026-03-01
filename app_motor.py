@@ -9,6 +9,7 @@ import base64
 import io
 import sys
 import os
+from collections import deque
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -58,6 +59,20 @@ class MotorApp:
         self.schedule_running = False
         self.schedule_time = 0.0
         self.history = [[] for _ in range(4)]
+
+        # 절대좌표 추적 (최근 30초, 100ms 간격 → 300 samples)
+        self._pos_max_len = 300
+        self.abs_z = {
+            'upper': deque(maxlen=self._pos_max_len),
+            'lower': deque(maxlen=self._pos_max_len),
+        }
+        self.abs_angle = {
+            'upper': deque(maxlen=self._pos_max_len),
+            'lower': deque(maxlen=self._pos_max_len),
+        }
+        self.cur_z = {'upper': 0.0, 'lower': 0.0}
+        self.cur_angle = {'upper': 0.0, 'lower': 0.0}
+        self._graph_loop_running = False
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
         self.speed_mode = "low"       # "low" or "high"
@@ -912,108 +927,169 @@ class MotorApp:
                 return f"{arrow} {deg / 360:.1f}rev"
             return f"{arrow} {deg:.0f}°"
 
-    def _render_trend(self) -> str:
-        if not plt:
-            return ""
-
-        fig, (ax_gantt, ax) = plt.subplots(
-            2, 1, figsize=(7, 5.5), dpi=100,
-            gridspec_kw={'height_ratios': [1.3, 2]},
-        )
-
-        global_h = self._get_global_total_duration()
-        if global_h <= 0:
-            global_h = 0.01
-        total_h = global_h
-        total_s = max(int(total_h * 3600), 10)
-
-        if total_s < 60:
-            t_unit, t_div = "s", 1.0
-        elif total_s < 3600:
-            t_unit, t_div = "min", 60.0
-        else:
-            t_unit, t_div = "h", 3600.0
-
-        # ── Gantt chart (timeline) ──
-        bar_colors = ['#42A5F5', '#66BB6A', '#FFA726', '#AB47BC']
-        gantt_labels = ['U-Stage', 'L-Stage', 'U-Rotate', 'L-Rotate']
-        gantt_order = [0, 2, 1, 3]
-
-        for row, mi in enumerate(gantt_order):
-            segs = self._get_schedule_segments(mi)
-            for (t0, t1, spd, d) in segs:
-                if spd > 0:
-                    x0 = t0 * 3600 / t_div
-                    w = (t1 - t0) * 3600 / t_div
-                    ax_gantt.barh(row, w, left=x0, height=0.6,
-                                 color=bar_colors[row], alpha=0.85,
-                                 edgecolor='#333333', linewidth=0.5)
-                    mid = x0 + w / 2
-                    label = self._seg_label(mi, spd, t1 - t0, d)
-                    fontsize = 7 if len(label) > 10 else 8
-                    ax_gantt.text(mid, row, label, ha='center', va='center',
-                                 fontsize=fontsize, color='white', fontweight='bold')
-
-        if self.schedule_running and self.history[0]:
-            elapsed_disp = len(self.history[0]) / t_div
-            ax_gantt.axvline(x=elapsed_disp, color='red', linewidth=1.5, linestyle='-', alpha=0.8)
-
-        ax_gantt.set_yticks(range(4))
-        ax_gantt.set_yticklabels(gantt_labels, fontsize=10)
-        ax_gantt.set_xlim(0, total_s / t_div)
-        ax_gantt.set_xlabel("")
-        ax_gantt.xaxis.tick_top()
-        ax_gantt.tick_params(axis='x', labelsize=9)
-        ax_gantt.invert_yaxis()
-        ax_gantt.grid(axis='x', alpha=0.3)
-        ax_gantt.set_axisbelow(True)
-        ax_gantt.set_title("Timeline", fontsize=12, fontweight='bold', pad=18)
-
-        # ── Speed graph (all 4 motors) ──
-        line_colors = ['#1565C0', '#2E7D32', '#E65100', '#7B1FA2']
-        line_labels = MOTOR_SHORT
-        pts = min(total_s, 3600)
-        sched_t_h = [i * total_h / pts for i in range(pts + 1)]
-        sched_t_disp = [t * 3600 / t_div for t in sched_t_h]
-
-        max_v = 100
-        for mi in range(4):
-            vals = [self._get_speed_at(mi, t) for t in sched_t_h]
-            ax.plot(sched_t_disp, vals, '--', color=line_colors[mi], linewidth=1.2,
-                    alpha=0.5, label=f"{line_labels[mi]}")
-            v_max = max(vals) if vals else 0
-            if v_max > max_v:
-                max_v = v_max
-
-            if self.history[mi]:
-                n = len(self.history[mi])
-                hist_t = [i / t_div for i in range(n)]
-                ax.plot(hist_t, self.history[mi], '-', color=line_colors[mi], linewidth=2)
-                h_max = max(self.history[mi])
-                if h_max > max_v:
-                    max_v = h_max
-
-        ax.set_ylim(0, max(max_v * 1.2, 100))
-        ax.set_xlim(0, total_s / t_div)
-        ax.set_xlabel(f"Time ({t_unit})", fontsize=12)
-        ax.set_ylabel("Speed (pps)", fontsize=12)
-        ax.set_title("All Motors", fontsize=13, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=10)
-        ax.legend(loc="upper right", fontsize=9, ncol=2)
-        ax.grid(True, alpha=0.3)
-
-        if self.history[0]:
-            elapsed_disp = len(self.history[0]) / t_div
-            if elapsed_disp < total_s / t_div:
-                ax.axvline(x=elapsed_disp, color='red', linestyle=':', linewidth=1, alpha=0.6)
-
-        plt.tight_layout()
-
+    @staticmethod
+    def _fig_to_b64(fig) -> str:
         buf = io.BytesIO()
-        fig.savefig(buf, format='png')
+        fig.savefig(buf, format='png', bbox_inches='tight')
         plt.close(fig)
         buf.seek(0)
         return f"data:image/png;base64,{base64.b64encode(buf.read()).decode('ascii')}"
+
+    def _render_stage_diagram(self) -> str:
+        """세로 스테이지 도식: 현재 Z 절대좌표를 수평 직선으로 표시"""
+        if not plt:
+            return ""
+        fig = plt.figure(figsize=(3.2, 4.0), dpi=100)
+
+        z_upper = self.cur_z['upper']
+        z_lower = self.cur_z['lower']
+        all_z = [z_upper, z_lower, 0]
+        z_min = min(all_z) - 5
+        z_max = max(all_z) + 5
+        if z_max - z_min < 10:
+            z_min, z_max = -5, 5
+
+        ax_u = fig.add_axes([0.15, 0.08, 0.3, 0.82])
+        ax_u.set_xlim(0, 1)
+        ax_u.set_ylim(z_min, z_max)
+        ax_u.fill_between([0.1, 0.9], z_min, z_max, color='#E3F2FD', alpha=0.5)
+        ax_u.axhline(y=z_upper, color='#1565C0', linewidth=3)
+        ax_u.plot(0.5, z_upper, 's', color='#1565C0', markersize=10)
+        ax_u.text(0.5, z_max - (z_max - z_min) * 0.06, f"{z_upper:.1f} mm",
+                  ha='center', va='top', fontsize=10, fontweight='bold', color='#1565C0')
+        ax_u.set_title("Upper\nStage", fontsize=11, fontweight='bold', pad=8)
+        ax_u.set_xticks([])
+        ax_u.set_ylabel("Z (mm)", fontsize=9)
+        ax_u.tick_params(axis='y', labelsize=8)
+        ax_u.grid(axis='y', alpha=0.3)
+        for spine in ['top', 'right', 'bottom']:
+            ax_u.spines[spine].set_visible(False)
+
+        ax_l = fig.add_axes([0.58, 0.08, 0.3, 0.82])
+        ax_l.set_xlim(0, 1)
+        ax_l.set_ylim(z_min, z_max)
+        ax_l.fill_between([0.1, 0.9], z_min, z_max, color='#E8F5E9', alpha=0.5)
+        ax_l.axhline(y=z_lower, color='#2E7D32', linewidth=3)
+        ax_l.plot(0.5, z_lower, 's', color='#2E7D32', markersize=10)
+        ax_l.text(0.5, z_max - (z_max - z_min) * 0.06, f"{z_lower:.1f} mm",
+                  ha='center', va='top', fontsize=10, fontweight='bold', color='#2E7D32')
+        ax_l.set_title("Lower\nStage", fontsize=11, fontweight='bold', pad=8)
+        ax_l.set_xticks([])
+        ax_l.set_ylabel("")
+        ax_l.tick_params(axis='y', labelsize=8)
+        ax_l.grid(axis='y', alpha=0.3)
+        for spine in ['top', 'right', 'bottom']:
+            ax_l.spines[spine].set_visible(False)
+
+        return self._fig_to_b64(fig)
+
+    def _render_z_trend(self) -> str:
+        """Z 절대좌표 추이 (최근 30초)"""
+        if not plt:
+            return ""
+        fig = plt.figure(figsize=(3.8, 2.2), dpi=100)
+        ax = fig.add_subplot(111)
+
+        n_u = len(self.abs_z['upper'])
+        n_l = len(self.abs_z['lower'])
+        if n_u > 0:
+            t = [i * 0.1 for i in range(-n_u + 1, 1)]
+            ax.plot(t, list(self.abs_z['upper']), '-', color='#1565C0', linewidth=2, label='Upper')
+        if n_l > 0:
+            t = [i * 0.1 for i in range(-n_l + 1, 1)]
+            ax.plot(t, list(self.abs_z['lower']), '-', color='#2E7D32', linewidth=2, label='Lower')
+
+        ax.set_xlim(-30, 0)
+        ax.set_xlabel("Time (s)", fontsize=9)
+        ax.set_ylabel("Z (mm)", fontsize=9)
+        ax.set_title("Z Position", fontsize=11, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=8)
+        ax.legend(loc="upper left", fontsize=8)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        return self._fig_to_b64(fig)
+
+    def _render_angle_trend(self) -> str:
+        """각도 절대좌표 추이 (최근 30초)"""
+        if not plt:
+            return ""
+        fig = plt.figure(figsize=(3.8, 2.2), dpi=100)
+        ax = fig.add_subplot(111)
+
+        n_u = len(self.abs_angle['upper'])
+        n_l = len(self.abs_angle['lower'])
+        if n_u > 0:
+            t = [i * 0.1 for i in range(-n_u + 1, 1)]
+            ax.plot(t, list(self.abs_angle['upper']), '-', color='#E65100', linewidth=2, label='Upper')
+        if n_l > 0:
+            t = [i * 0.1 for i in range(-n_l + 1, 1)]
+            ax.plot(t, list(self.abs_angle['lower']), '-', color='#7B1FA2', linewidth=2, label='Lower')
+
+        ax.set_xlim(-30, 0)
+        ax.set_xlabel("Time (s)", fontsize=9)
+        ax.set_ylabel("Angle (°)", fontsize=9)
+        ax.set_title("Angle Position", fontsize=11, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=8)
+        ax.legend(loc="upper left", fontsize=8)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        return self._fig_to_b64(fig)
+
+    def _update_abs_position(self):
+        """현재 스케줄/수동 상태로부터 절대좌표 갱신 (100ms마다 호출)"""
+        dt = 0.1
+        for mi, key in [(0, 'upper'), (2, 'lower')]:
+            if self.motor_running[mi] or (self.schedule_running and self.history[mi]):
+                spd_pps = 0
+                d = '+'
+                if self.schedule_running and self.history[mi]:
+                    spd_pps = self.history[mi][-1] if self.history[mi] else 0
+                    d = self._get_direction_at(mi, self.schedule_time)
+                elif self.motor_running[mi]:
+                    spd_pps = self.low_speed if self.speed_mode == "low" else self.high_speed
+                    d = '+'
+                mm_per_sec = spd_pps / PULSE_PER_MM
+                sign = -1 if d in ('-', 'minus', 'down') else 1
+                self.cur_z[key] += sign * mm_per_sec * dt
+            self.abs_z[key].append(self.cur_z[key])
+
+        for mi, key in [(1, 'upper'), (3, 'lower')]:
+            if self.motor_running[mi] or (self.schedule_running and self.history[mi]):
+                spd_pps = 0
+                d = 'CW'
+                if self.schedule_running and self.history[mi]:
+                    spd_pps = self.history[mi][-1] if self.history[mi] else 0
+                    d = self._get_direction_at(mi, self.schedule_time)
+                elif self.motor_running[mi]:
+                    spd_pps = self.low_speed if self.speed_mode == "low" else self.high_speed
+                    d = 'CW'
+                deg_per_sec = spd_pps * STEP_ANGLE
+                sign = -1 if d in ('CCW', 'ccw') else 1
+                self.cur_angle[key] += sign * deg_per_sec * dt
+            self.abs_angle[key].append(self.cur_angle[key])
+
+    def _update_all_graphs(self):
+        """3개 그래프 모두 갱신"""
+        try:
+            self.stage_diagram_img.src = self._render_stage_diagram()
+            self.stage_diagram_img.update()
+            self.z_trend_img.src = self._render_z_trend()
+            self.z_trend_img.update()
+            self.angle_trend_img.src = self._render_angle_trend()
+            self.angle_trend_img.update()
+        except Exception:
+            pass
+
+    async def _graph_loop(self):
+        """100ms 주기 그래프 갱신 루프"""
+        self._graph_loop_running = True
+        while self._graph_loop_running:
+            try:
+                self._update_abs_position()
+                self._update_all_graphs()
+            except Exception as ex:
+                print(f"Graph loop error: {ex}")
+            await asyncio.sleep(0.1)
 
     # ──────────────────────────────────────────────
     # Schedule logic
@@ -1096,8 +1172,7 @@ class MotorApp:
         self.history = [[] for _ in range(4)]
         self.schedule_time = 0.0
         self.schedule_running = False
-        self.trend_image.src = self._render_trend()
-        self.trend_image.update()
+        self._update_all_graphs()
         self._status_text.value = "Schedule preview applied"
         self._status_text.color = "#2196F3"
         self.page.update()
@@ -1135,8 +1210,7 @@ class MotorApp:
                     self.start_btn.text = "Start"
                     self._status_text.value = "Schedule complete"
                     self._status_text.color = "#2196F3"
-                    self.trend_image.src = self._render_trend()
-                    self.trend_image.update()
+                    self._update_all_graphs()
                     self.page.update()
                     break
 
@@ -1155,9 +1229,6 @@ class MotorApp:
                                 self.motor_ctrl.stop_motor(motor_id)
                         except Exception as ex:
                             print(f"Motor {motor_id} error: {ex}")
-
-                self.trend_image.src = self._render_trend()
-                self.trend_image.update()
 
             except Exception as ex:
                 print(f"Schedule loop error: {ex}")
@@ -1184,7 +1255,9 @@ class MotorApp:
             "QVQIHWNgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAAtJREFUCB1jYAACAAAFAAGbfEHV"
             "AAAAAElFTkSuQmCC"
         )
-        self.trend_image = ft.Image(src=placeholder_b64, width=900, height=500)
+        self.stage_diagram_img = ft.Image(src=placeholder_b64, width=320, height=400)
+        self.z_trend_img = ft.Image(src=placeholder_b64, width=380, height=220)
+        self.angle_trend_img = ft.Image(src=placeholder_b64, width=380, height=220)
 
         self.current_view = "schedule"
 
@@ -1204,7 +1277,11 @@ class MotorApp:
         )
 
         right_panel = ft.Container(
-            content=self.trend_image,
+            content=ft.Column([
+                self.stage_diagram_img,
+                self.z_trend_img,
+                self.angle_trend_img,
+            ], spacing=4, scroll=ft.ScrollMode.AUTO, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
             expand=3, bgcolor="#ffffff", border_radius=8, padding=5,
         )
 
@@ -1213,6 +1290,8 @@ class MotorApp:
         self._switch_view("schedule")
 
         page.add(ft.Stack([layout, self._numpad_overlay, self._durpad_overlay], expand=True))
+
+        page.run_task(self._graph_loop)
 
     def _nav_btn(self, label, on_click):
         return ft.Container(
