@@ -807,7 +807,7 @@ class MotorApp:
             "QVQIHWNgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAAtJREFUCB1jYAACAAAFAAGbfEHV"
             "AAAAAElFTkSuQmCC"
         )
-        self.trend_image = ft.Image(src=placeholder_b64, fit=ft.ImageFit.CONTAIN, expand=True)
+        self.trend_image = ft.Image(src=placeholder_b64, width=900, height=500)
 
         self.current_view = "schedule"
 
