@@ -67,7 +67,6 @@ class MotorApp:
         self.cur_angle = {'upper': 0.0, 'lower': 0.0}
         self.home_z = {'upper': 0.0, 'lower': 0.0}
         self.home_angle = {'upper': 0.0, 'lower': 0.0}
-        self.home_pulse = {}  # {motor_id: pulse_value} 드라이버 절대좌표
         self._homing = False
         self._graph_loop_running = False
         self._load_home()
@@ -96,7 +95,7 @@ class MotorApp:
             self.home_z = data.get('home_z', {'upper': 0.0, 'lower': 0.0})
             self.home_angle = data.get('home_angle', {'upper': 0.0, 'lower': 0.0})
             self.stage_gap = data.get('stage_gap', 100.0)
-            self.home_pulse = data.get('home_pulse', {})
+            
             self.cur_z = dict(self.home_z)
             self.cur_angle = dict(self.home_angle)
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
@@ -107,7 +106,7 @@ class MotorApp:
             'home_z': self.home_z,
             'home_angle': self.home_angle,
             'stage_gap': self.stage_gap,
-            'home_pulse': self.home_pulse,
+            
         }
         try:
             with open(self._config_path, 'w') as f:
@@ -550,7 +549,7 @@ class MotorApp:
         self.page.update()
 
     def _set_home(self):
-        """현재 위치를 홈으로 저장 + 드라이버 절대좌표도 기록"""
+        """현재 위치를 홈으로 저장 (소프트웨어 위치 기록)"""
         dist_upper = self.cur_z['upper'] - self.home_z.get('upper', 0.0)
         dist_lower = self.cur_z['lower'] - self.home_z.get('lower', 0.0)
         self.stage_gap = max(0.1, self.stage_gap + dist_upper - dist_lower)
@@ -558,12 +557,6 @@ class MotorApp:
         self.home_z['lower'] = self.cur_z['lower']
         self.home_angle['upper'] = self.cur_angle['upper']
         self.home_angle['lower'] = self.cur_angle['lower']
-
-        if self.motor_ctrl and self.motor_ctrl.connected:
-            for motor_id in MOTOR_IDS:
-                pos = self.motor_ctrl.read_position(motor_id)
-                if pos is not None:
-                    self.home_pulse[motor_id] = pos
 
         self._save_home()
         self._update_all_graphs()
@@ -573,17 +566,9 @@ class MotorApp:
         self.page.update()
 
     def _go_home(self):
-        """홈 위치로 복귀 (드라이버 절대좌표 위치 결정 운전)"""
+        """홈 위치로 복귀 (P1 상대좌표 이동)"""
         if self.schedule_running or self._homing:
             return
-
-        if not self.home_pulse:
-            if hasattr(self, '_status_text') and self._status_text:
-                self._status_text.value = "No home set (Set Home first)"
-                self._status_text.color = "#f44336"
-            self.page.update()
-            return
-
         if hasattr(self, '_status_text') and self._status_text:
             self._status_text.value = "Homing..."
             self._status_text.color = "#FF9800"
@@ -591,48 +576,49 @@ class MotorApp:
         self.page.run_task(self._homing_loop)
 
     async def _homing_loop(self):
+        from devices.motor_controller import mm_to_pulse, degree_to_pulse
         self._homing = True
         homing_speed = 1000  # 5 mm/s
+        mm_per_sec = homing_speed / PULSE_PER_MM
+
+        diff_z = {}
+        diff_angle = {}
+        for key in ('upper', 'lower'):
+            diff_z[key] = self.home_z[key] - self.cur_z[key]
+            diff_angle[key] = self.home_angle[key] - self.cur_angle[key]
 
         if self.motor_ctrl and self.motor_ctrl.connected:
-            for motor_id in MOTOR_IDS:
-                target = self.home_pulse.get(motor_id)
-                if target is not None:
-                    try:
-                        self.motor_ctrl.move_absolute(
-                            motor_id, target,
-                            speed=homing_speed, accel=500, decel=500
-                        )
-                    except Exception as ex:
-                        print(f"Homing {motor_id} error: {ex}")
-                    await asyncio.sleep(0.05)
+            for drv_id, key in [(1, 'upper'), (2, 'lower')]:
+                x_delta = mm_to_pulse(diff_z[key])
+                y_delta = degree_to_pulse(diff_angle[key])
+                if x_delta == 0 and y_delta == 0:
+                    continue
+                try:
+                    self.motor_ctrl.move_relative_xy(
+                        drv_id, x_delta, y_delta, speed=homing_speed
+                    )
+                except Exception as ex:
+                    print(f"Homing driver {drv_id} error: {ex}")
+                await asyncio.sleep(0.05)
 
-        timeout = 60.0
+        max_dist = max(
+            abs(diff_z['upper']), abs(diff_z['lower']),
+            abs(diff_angle['upper']) / STEP_ANGLE / PULSE_PER_MM,
+            abs(diff_angle['lower']) / STEP_ANGLE / PULSE_PER_MM,
+        )
+        est_time = (max_dist / mm_per_sec + 1.0) if mm_per_sec > 0 else 2.0
+
+        start_z = dict(self.cur_z)
+        start_angle = dict(self.cur_angle)
+        tick = 0.1
         elapsed = 0.0
-        while self._homing and elapsed < timeout:
-            all_done = True
-            if self.motor_ctrl and self.motor_ctrl.connected:
-                for motor_id in MOTOR_IDS:
-                    target = self.home_pulse.get(motor_id)
-                    if target is None:
-                        continue
-                    pos = self.motor_ctrl.read_position(motor_id)
-                    if pos is not None:
-                        if abs(pos - target) > 5:
-                            all_done = False
-                        mi = MOTOR_IDS.index(motor_id)
-                        key = 'upper' if mi < 2 else 'lower'
-                        if mi in (0, 2):
-                            self.cur_z[key] = self.home_z[key] + (pos - target) / PULSE_PER_MM
-                        else:
-                            self.cur_angle[key] = self.home_angle[key] + (pos - target) * STEP_ANGLE
-            else:
-                all_done = True
-
-            if all_done:
-                break
-            await asyncio.sleep(0.2)
-            elapsed += 0.2
+        while self._homing and elapsed < est_time:
+            frac = min(1.0, elapsed / max(0.01, est_time - 1.0))
+            for key in ('upper', 'lower'):
+                self.cur_z[key] = start_z[key] + diff_z[key] * frac
+                self.cur_angle[key] = start_angle[key] + diff_angle[key] * frac
+            await asyncio.sleep(tick)
+            elapsed += tick
 
         self.cur_z['upper'] = self.home_z['upper']
         self.cur_z['lower'] = self.home_z['lower']
@@ -642,12 +628,8 @@ class MotorApp:
         self._homing = False
         self._update_all_graphs()
         if hasattr(self, '_status_text') and self._status_text:
-            if elapsed >= timeout:
-                self._status_text.value = "Homing timeout"
-                self._status_text.color = "#f44336"
-            else:
-                self._status_text.value = "Returned to home"
-                self._status_text.color = "#4CAF50"
+            self._status_text.value = "Returned to home"
+            self._status_text.color = "#4CAF50"
         self.page.update()
 
     def _confirm_emergency_stop(self):

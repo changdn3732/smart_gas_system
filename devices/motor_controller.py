@@ -1,7 +1,8 @@
 """
 오토닉스 PMC-2HSP 모터 드라이버 통신 모듈
 - 드라이버 2개, 모터 4개 (각 드라이버당 X/Y 2축)
-- Modbus RTU 통신
+- Modbus RTU: 연속운전, 속도/가감속 설정
+- P1 전용 프로토콜: 절대/상대 좌표 이동, 직선 보간
 - 스텝각: 0.36°, 1회전 1000펄스, 리드 5mm
 """
 from pymodbus.client import ModbusSerialClient
@@ -21,19 +22,15 @@ PULSE_PER_MM = 200
 
 CMD_REGISTER = 0x0000
 
-# 절대좌표 위치 결정 레지스터 (매뉴얼 주소 - 1 = 0-based)
-POS_REGISTERS = {
-    'present_pos':  1000 - 1,   # INT32, 현재 절대좌표 (펄스)
-    'target_pos':   1002 - 1,   # INT32, 목표 절대좌표
-    'pos_speed':    1004 - 1,   # INT32, 이동 속도
-    'pos_accel':    1006 - 1,   # INT32, 가속도
-    'pos_decel':    1008 - 1,   # INT32, 감속도
-    'motion_start': 1010 - 1,   # INT16, 1 입력 시 이동 시작
-    'motion_stop':  1011 - 1,   # INT16, 1 입력 시 정지
-    'alarm_status': 1012 - 1,   # INT16, 알람 상태
-    'servo_on':     1013 - 1,   # INT16, 모터 enable
-    'home_start':   1014 - 1,   # INT16, 원점 복귀 시작
-}
+# P1 명령 코드
+P1_ABSOLUTE_MOVE = 0x71   # 절대좌표 이동
+P1_RELATIVE_MOVE = 0x72   # 상대좌표 이동
+P1_INTERPOLATION = 0x73   # 직선 보간
+
+# P1 축 선택
+P1_AXIS_X    = 0x01
+P1_AXIS_Y    = 0x02
+P1_AXIS_XY   = 0x03
 
 X_REGISTERS = {
     'speed_ratio': 0x0454 - 0x0001,
@@ -277,69 +274,78 @@ class PMC2HSPDriver:
             status.speed = speed
         return ok
 
-    # ── 절대좌표 위치 결정 운전 ──
+    # ── P1 전용 프로토콜 (STX/ETX 프레임) ──
 
-    def _read_int32(self, address: int) -> Optional[int]:
-        if not self.connected or not self.client:
-            return None
-        try:
-            result = self.client.read_holding_registers(address, 2, slave=self.slave_id)
-            if result.isError():
-                return None
-            hi, lo = result.registers[0], result.registers[1]
-            value = (hi << 16) | lo
-            if value >= 0x80000000:
-                value -= 0x100000000
-            return value
-        except Exception as e:
-            self.log(f"INT32 읽기 오류 @{address}: {e}")
-            return None
+    def _get_raw_serial(self):
+        """pymodbus 클라이언트의 하위 serial.Serial 객체 반환"""
+        if self.client and hasattr(self.client, 'socket') and self.client.socket:
+            return self.client.socket
+        return None
 
-    def _write_int32(self, address: int, value: int) -> bool:
-        if not self.connected or not self.client:
+    @staticmethod
+    def _signed_to_4bytes(val: int) -> bytes:
+        """signed int → 4바이트 big-endian"""
+        if val < 0:
+            val += 0x100000000
+        return val.to_bytes(4, 'big')
+
+    def _build_p1_packet(self, data: bytes) -> bytes:
+        """
+        P1 명령 패킷 생성
+        [STX] [body: ID(2) + "P1"(2) + DATA(hex-ascii)] [ETX] [BCC]
+        body 는 ASCII-hex 인코딩
+        """
+        id_str = f"{self.slave_id:02X}"
+        data_hex = data.hex().upper()
+        body_str = id_str + "P1" + data_hex
+        body_bytes = body_str.encode('ascii')
+
+        bcc = 0
+        for b in body_bytes:
+            bcc ^= b
+
+        return bytes([0x02]) + body_bytes + bytes([0x03, bcc])
+
+    def _send_p1(self, data: bytes) -> bool:
+        """P1 패킷을 raw serial 로 전송"""
+        ser = self._get_raw_serial()
+        if not ser:
+            self.log("P1 전송 실패: 시리얼 포트 없음")
             return False
         try:
-            if value < 0:
-                value += 0x100000000
-            hi = (value >> 16) & 0xFFFF
-            lo = value & 0xFFFF
-            r1 = self.client.write_register(address, hi, slave=self.slave_id)
-            r2 = self.client.write_register(address + 1, lo, slave=self.slave_id)
-            return not r1.isError() and not r2.isError()
+            packet = self._build_p1_packet(data)
+            ser.reset_input_buffer()
+            ser.write(packet)
+            self.log(f"P1 TX: {packet.hex(' ').upper()}")
+            time.sleep(0.1)
+            if ser.in_waiting:
+                resp = ser.read(ser.in_waiting)
+                self.log(f"P1 RX: {resp.hex(' ').upper()}")
+            return True
         except Exception as e:
-            self.log(f"INT32 쓰기 오류 @{address}: {e}")
+            self.log(f"P1 통신 오류: {e}")
             return False
 
-    def read_present_position(self) -> Optional[int]:
-        return self._read_int32(POS_REGISTERS['present_pos'])
+    def move_absolute_p1(self, x_pulse: int = 0, y_pulse: int = 0,
+                         axis: int = P1_AXIS_XY) -> bool:
+        """71H: 절대좌표 이동"""
+        data = bytes([P1_ABSOLUTE_MOVE, axis]) \
+               + self._signed_to_4bytes(x_pulse) \
+               + self._signed_to_4bytes(y_pulse)
+        return self._send_p1(data)
 
-    def move_to_position(self, target_pulse: int, speed: int = 1000,
-                         accel: int = 500, decel: int = 500) -> bool:
-        ok = self._write_int32(POS_REGISTERS['target_pos'], target_pulse)
-        time.sleep(0.02)
-        ok = ok and self._write_int32(POS_REGISTERS['pos_speed'], speed)
-        time.sleep(0.02)
-        ok = ok and self._write_int32(POS_REGISTERS['pos_accel'], accel)
-        time.sleep(0.02)
-        ok = ok and self._write_int32(POS_REGISTERS['pos_decel'], decel)
-        time.sleep(0.02)
-        if ok:
-            ok = self._write_register(POS_REGISTERS['motion_start'], 1)
-            self.log(f"절대좌표 이동: target={target_pulse}, speed={speed}")
-        return ok
+    def move_relative_p1(self, x_delta: int = 0, y_delta: int = 0,
+                         axis: int = P1_AXIS_XY) -> bool:
+        """72H: 상대좌표 이동"""
+        data = bytes([P1_RELATIVE_MOVE, axis]) \
+               + self._signed_to_4bytes(x_delta) \
+               + self._signed_to_4bytes(y_delta)
+        return self._send_p1(data)
 
-    def stop_positioning(self) -> bool:
-        return self._write_register(POS_REGISTERS['motion_stop'], 1)
-
-    def set_servo(self, on: bool) -> bool:
-        return self._write_register(POS_REGISTERS['servo_on'], 1 if on else 0)
-
-    def start_home_return(self) -> bool:
-        self.log("원점 복귀 시작")
-        return self._write_register(POS_REGISTERS['home_start'], 1)
-
-    def read_alarm(self) -> Optional[int]:
-        return self._read_register(POS_REGISTERS['alarm_status'])
+    def set_interpolation(self, on: bool) -> bool:
+        """73H: 직선 보간 ON/OFF"""
+        data = bytes([P1_INTERPOLATION, 0x01 if on else 0x00]) + bytes(8)
+        return self._send_p1(data)
 
 
 def mm_to_pulse(mm: float) -> int:
@@ -455,24 +461,77 @@ class MotorController:
             self.motor_speeds[k] = 0
         return True
 
-    def read_position(self, motor_id: str) -> Optional[int]:
-        if not self.connected:
-            return None
-        drv, axis = self._get_driver_axis(motor_id)
-        return drv.read_present_position()
-
     def move_absolute(self, motor_id: str, target_pulse: int,
-                      speed: int = 1000, accel: int = 500, decel: int = 500) -> bool:
+                      speed: int = 1000) -> bool:
+        """P1 절대좌표 이동 (단일 축)"""
         if not self.connected:
             return False
         drv, axis = self._get_driver_axis(motor_id)
-        return drv.move_to_position(target_pulse, speed, accel, decel)
+        clamped = min(max(1, speed), 8000)
+        drv.set_speed(axis, clamped, 1)
+        time.sleep(0.03)
+        drv.select_speed(axis, 1)
+        time.sleep(0.03)
+        if axis == MotorAxis.X:
+            return drv.move_absolute_p1(x_pulse=target_pulse, y_pulse=0,
+                                        axis=P1_AXIS_X)
+        else:
+            return drv.move_absolute_p1(x_pulse=0, y_pulse=target_pulse,
+                                        axis=P1_AXIS_Y)
 
-    def home_return(self, motor_id: str) -> bool:
+    def move_absolute_xy(self, driver_id: int,
+                         x_pulse: int, y_pulse: int,
+                         speed: int = 1000) -> bool:
+        """P1 XY 동시 절대좌표 이동"""
+        if not self.connected:
+            return False
+        drv = self.driver1 if driver_id == 1 else self.driver2
+        clamped = min(max(1, speed), 8000)
+        drv.set_speed(MotorAxis.X, clamped, 1)
+        time.sleep(0.02)
+        drv.set_speed(MotorAxis.Y, clamped, 1)
+        time.sleep(0.02)
+        drv.select_speed(MotorAxis.X, 1)
+        time.sleep(0.02)
+        drv.select_speed(MotorAxis.Y, 1)
+        time.sleep(0.02)
+        return drv.move_absolute_p1(x_pulse, y_pulse, axis=P1_AXIS_XY)
+
+    def move_relative(self, motor_id: str, delta_pulse: int,
+                      speed: int = 1000) -> bool:
+        """P1 상대좌표 이동 (단일 축)"""
         if not self.connected:
             return False
         drv, axis = self._get_driver_axis(motor_id)
-        return drv.start_home_return()
+        clamped = min(max(1, speed), 8000)
+        drv.set_speed(axis, clamped, 1)
+        time.sleep(0.03)
+        drv.select_speed(axis, 1)
+        time.sleep(0.03)
+        if axis == MotorAxis.X:
+            return drv.move_relative_p1(x_delta=delta_pulse, y_delta=0,
+                                        axis=P1_AXIS_X)
+        else:
+            return drv.move_relative_p1(x_delta=0, y_delta=delta_pulse,
+                                        axis=P1_AXIS_Y)
+
+    def move_relative_xy(self, driver_id: int,
+                         x_delta: int, y_delta: int,
+                         speed: int = 1000) -> bool:
+        """P1 XY 동시 상대좌표 이동"""
+        if not self.connected:
+            return False
+        drv = self.driver1 if driver_id == 1 else self.driver2
+        clamped = min(max(1, speed), 8000)
+        drv.set_speed(MotorAxis.X, clamped, 1)
+        time.sleep(0.02)
+        drv.set_speed(MotorAxis.Y, clamped, 1)
+        time.sleep(0.02)
+        drv.select_speed(MotorAxis.X, 1)
+        time.sleep(0.02)
+        drv.select_speed(MotorAxis.Y, 1)
+        time.sleep(0.02)
+        return drv.move_relative_p1(x_delta, y_delta, axis=P1_AXIS_XY)
 
     def get_motor_type(self, motor_id: str) -> str:
         return self.MOTOR_MAP[motor_id]['type']
