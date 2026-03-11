@@ -563,11 +563,77 @@ class MotorApp:
         self.page.update()
 
     def _go_home(self):
-        """홈 위치로 복귀"""
-        self.cur_z['upper'] = self.home_z['upper']
-        self.cur_z['lower'] = self.home_z['lower']
-        self.cur_angle['upper'] = self.home_angle['upper']
-        self.cur_angle['lower'] = self.home_angle['lower']
+        """홈 위치로 복귀 (연속운전 + 시간 제어)"""
+        if self.schedule_running or self._homing:
+            return
+        if hasattr(self, '_status_text') and self._status_text:
+            self._status_text.value = "Homing..."
+            self._status_text.color = "#FF9800"
+        self.page.update()
+        self.page.run_task(self._homing_loop)
+
+    async def _homing_loop(self):
+        self._homing = True
+        homing_speed_pps = 1000  # 5 mm/s
+        mm_per_sec = homing_speed_pps / PULSE_PER_MM
+        deg_per_sec = homing_speed_pps * STEP_ANGLE
+        tick = 0.05
+
+        tasks = []
+        for mi, key in [(0, 'upper'), (2, 'lower')]:
+            diff = self.home_z[key] - self.cur_z[key]
+            if abs(diff) > 0.01:
+                direction = '+' if diff > 0 else '-'
+                tasks.append({'mi': mi, 'key': key, 'type': 'z',
+                              'dir': direction, 'remain': abs(diff)})
+        for mi, key in [(1, 'upper'), (3, 'lower')]:
+            diff = self.home_angle[key] - self.cur_angle[key]
+            if abs(diff) > 0.01:
+                direction = 'CW' if diff > 0 else 'CCW'
+                tasks.append({'mi': mi, 'key': key, 'type': 'angle',
+                              'dir': direction, 'remain': abs(diff)})
+
+        if self.motor_ctrl and self.motor_ctrl.connected:
+            for t in tasks:
+                motor_id = MOTOR_IDS[t['mi']]
+                mapped_dir = DIRECTION_MAP.get(t['dir'], 'plus')
+                try:
+                    self.motor_ctrl.start_motor(motor_id, mapped_dir, homing_speed_pps)
+                except Exception:
+                    pass
+
+        while tasks and self._homing:
+            done = []
+            for t in tasks:
+                if t['type'] == 'z':
+                    step = mm_per_sec * tick
+                else:
+                    step = deg_per_sec * tick
+                t['remain'] -= step
+
+                sign = 1 if t['dir'] in ('+', 'CW') else -1
+                if t['type'] == 'z':
+                    self.cur_z[t['key']] += sign * mm_per_sec * tick
+                else:
+                    self.cur_angle[t['key']] += sign * deg_per_sec * tick
+
+                if t['remain'] <= 0:
+                    if t['type'] == 'z':
+                        self.cur_z[t['key']] = self.home_z[t['key']]
+                    else:
+                        self.cur_angle[t['key']] = self.home_angle[t['key']]
+                    if self.motor_ctrl and self.motor_ctrl.connected:
+                        try:
+                            self.motor_ctrl.stop_motor(MOTOR_IDS[t['mi']])
+                        except Exception:
+                            pass
+                    done.append(t)
+
+            for d in done:
+                tasks.remove(d)
+            await asyncio.sleep(tick)
+
+        self._homing = False
         self._update_all_graphs()
         if hasattr(self, '_status_text') and self._status_text:
             self._status_text.value = "Returned to home"
@@ -601,13 +667,14 @@ class MotorApp:
     def _emergency_stop(self):
         if self.motor_ctrl:
             self.motor_ctrl.stop_all(immediate=True)
+        self._homing = False
         if self.schedule_running:
             self.schedule_running = False
             if hasattr(self, 'start_btn') and self.start_btn:
                 self.start_btn.text = "Start"
-            if hasattr(self, '_status_text') and self._status_text:
-                self._status_text.value = "Emergency stopped"
-                self._status_text.color = "#ff0000"
+        if hasattr(self, '_status_text') and self._status_text:
+            self._status_text.value = "Emergency stopped"
+            self._status_text.color = "#ff0000"
         self.page.update()
 
     # ──────────────────────────────────────────────
