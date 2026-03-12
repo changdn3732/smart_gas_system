@@ -14,12 +14,7 @@ from enum import Enum
 import time
 import random
 
-try:
-    import pymodbus
-    _PY_MB_VER = int(pymodbus.__version__.split('.')[0])
-except Exception:
-    _PY_MB_VER = 3
-_SLAVE_KW = 'slave' if _PY_MB_VER >= 3 else 'unit'
+_SLAVE_KW = 'unit'
 
 # ==================== 레지스터 주소 정의 ====================
 

@@ -15,13 +15,7 @@ from enum import Enum
 import threading
 import time
 
-# pymodbus 2.x uses 'unit', 3.x uses 'slave'
-try:
-    import pymodbus
-    _PY_MB_VER = int(pymodbus.__version__.split('.')[0])
-except Exception:
-    _PY_MB_VER = 3
-_SLAVE_KW = 'slave' if _PY_MB_VER >= 3 else 'unit'
+_SLAVE_KW = 'unit'
 
 
 # ==================== 상수 정의 ====================
