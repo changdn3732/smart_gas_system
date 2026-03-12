@@ -287,15 +287,22 @@ class PMC2HSPDriver:
     def stop_all(self, immediate: bool = False) -> bool:
         return self.stop(MotorAxis.X, immediate) and self.stop(MotorAxis.Y, immediate)
 
-    def move_with_speed(self, axis: MotorAxis, direction: MotorDirection, speed: int) -> bool:
-        self.log(f"move_with_speed: axis={axis.value} dir={direction.value} speed={speed}PPS")
-        ok1 = self.set_speed(axis, speed, 1)
-        self.log(f"  set_speed → {'OK' if ok1 else 'FAIL'}")
-        if not ok1:
-            return False
-        time.sleep(0.05)
-        ok2 = self.select_speed(axis, 1)
-        self.log(f"  select_speed → {'OK' if ok2 else 'FAIL'}")
+    def move_with_speed(self, axis: MotorAxis, direction: MotorDirection,
+                        speed: int, speed_preset: int = 0) -> bool:
+        preset = speed_preset if 1 <= speed_preset <= 4 else 0
+        self.log(f"move_with_speed: axis={axis.value} dir={direction.value} "
+                 f"speed={speed}PPS preset={preset}")
+        if preset > 0:
+            ok2 = self.select_speed(axis, preset)
+            self.log(f"  select_speed({preset}) → {'OK' if ok2 else 'FAIL'}")
+        else:
+            ok1 = self.set_speed(axis, speed, 1)
+            self.log(f"  set_speed → {'OK' if ok1 else 'FAIL'}")
+            if not ok1:
+                return False
+            time.sleep(0.05)
+            ok2 = self.select_speed(axis, 1)
+            self.log(f"  select_speed(1) → {'OK' if ok2 else 'FAIL'}")
         if not ok2:
             return False
         time.sleep(0.05)
@@ -401,8 +408,8 @@ def speed_pps_to_deg_per_sec(pps: int) -> float:
 
 class MotorController:
     MOTOR_MAP = {
-        'upper_stage':  {'driver': 2, 'axis': MotorAxis.Y, 'name': '상부 스테이지', 'type': 'linear'},
-        'upper_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '상부 회전',     'type': 'rotate'},
+        'upper_stage':  {'driver': 1, 'axis': MotorAxis.X, 'name': '상부 스테이지', 'type': 'linear'},
+        'upper_rotate': {'driver': 1, 'axis': MotorAxis.Y, 'name': '상부 회전',     'type': 'rotate'},
         'lower_stage':  {'driver': 2, 'axis': MotorAxis.X, 'name': '하부 스테이지', 'type': 'linear'},
         'lower_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
     }
@@ -459,7 +466,8 @@ class MotorController:
             self.log(f"Modbus 연결 성공: {self.port}")
             self.driver1.connect(self.client)
             self.driver2.connect(self.client)
-            self._initialize_drivers()
+            self._initialize_drivers(
+                getattr(self, 'manual_speed_presets', None))
             return True
         except Exception as e:
             self.log(f"연결 오류: {e}")
@@ -483,11 +491,21 @@ class MotorController:
             self.client = None
         self.connected = False
 
-    def _initialize_drivers(self):
+    def _initialize_drivers(self, manual_speeds=None):
+        if manual_speeds is None:
+            manual_speeds = [5, 50, 300]
         for drv in (self.driver1, self.driver2):
             drv.set_pulse_scale(MotorAxis.X, 1, 1)
             drv.set_pulse_scale(MotorAxis.Y, 1, 1)
-        self.log("드라이버 초기화 완료 (scale=1/1, raw PPS)")
+            for axis in (MotorAxis.X, MotorAxis.Y):
+                for i, spd in enumerate(manual_speeds[:4]):
+                    ok = drv.set_speed(axis, spd, i + 1)
+                    readback = drv._read_register(
+                        (X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS)
+                        [f'drive_speed{i+1}'])
+                    drv.log(f"preset {axis.value}-speed{i+1}={spd} "
+                            f"write={'OK' if ok else 'FAIL'} readback={readback}")
+        self.log("드라이버 초기화 완료 (scale=1/1, 3 speed presets)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
@@ -517,7 +535,8 @@ class MotorController:
         drv = self.driver1 if cfg['driver'] == 1 else self.driver2
         return drv, cfg['axis']
 
-    def start_motor(self, motor_id: str, direction: str, speed: int = 1000) -> bool:
+    def start_motor(self, motor_id: str, direction: str, speed: int = 1000,
+                    speed_preset: int = 0) -> bool:
         if not self.connected:
             return False
         dir_map = {
@@ -529,7 +548,7 @@ class MotorController:
         if not d:
             return False
         drv, axis = self._get_driver_axis(motor_id)
-        ok = drv.move_with_speed(axis, d, speed)
+        ok = drv.move_with_speed(axis, d, speed, speed_preset)
         if ok:
             self.motor_speeds[motor_id] = speed
         return ok
