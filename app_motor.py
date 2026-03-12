@@ -531,8 +531,15 @@ class MotorApp:
         self.motor_ctrl = MotorController(port=port, baudrate=baud)
         ok = self.motor_ctrl.connect()
         if ok:
-            self._conn_status.value = f"Connected ({port})"
-            self._conn_status.color = "#4CAF50"
+            verify = self.motor_ctrl.verify_connection()
+            v_str = " | ".join(f"D{k}:{v}" for k, v in verify.items())
+            all_ok = all("OK" in str(v) for v in verify.values())
+            if all_ok:
+                self._conn_status.value = f"Connected ({port}) [{v_str}]"
+                self._conn_status.color = "#4CAF50"
+            else:
+                self._conn_status.value = f"Port open but driver error [{v_str}]"
+                self._conn_status.color = "#FF9800"
         else:
             self._conn_status.value = f"Failed ({port})"
             self._conn_status.color = "red"

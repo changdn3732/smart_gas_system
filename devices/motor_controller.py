@@ -423,6 +423,25 @@ class MotorController:
             drv.set_pulse_scale(MotorAxis.Y, 1, 200)
         self.log("드라이버 초기화 완료")
 
+    def verify_connection(self) -> dict:
+        """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
+        result = {}
+        for drv_id, drv in [(1, self.driver1), (2, self.driver2)]:
+            try:
+                resp = drv.client.read_holding_registers(
+                    0x0000, 1, slave=drv.slave_id
+                )
+                if resp.isError():
+                    result[drv_id] = f"응답 오류: {resp}"
+                    drv.log(f"통신 검증 실패: {resp}")
+                else:
+                    result[drv_id] = f"OK (reg0={resp.registers[0]:#06x})"
+                    drv.log(f"통신 검증 성공: {resp.registers[0]:#06x}")
+            except Exception as e:
+                result[drv_id] = f"예외: {e}"
+                drv.log(f"통신 검증 예외: {e}")
+        return result
+
     def _get_driver_axis(self, motor_id: str):
         cfg = self.MOTOR_MAP[motor_id]
         drv = self.driver1 if cfg['driver'] == 1 else self.driver2
