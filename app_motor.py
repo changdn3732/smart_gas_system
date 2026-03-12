@@ -1156,7 +1156,7 @@ class MotorApp:
             width=200, value=self.manual_speeds[self.speed_mode_idx]["label"],
             text_size=14, dense=True,
             options=[ft.DropdownOption(s["label"]) for s in self.manual_speeds],
-            on_change=lambda e: self._on_speed_dropdown_change(e),
+            on_select=lambda e: self._on_speed_dropdown_change(e),
         )
         self.schedule_content.controls.append(
             ft.Row([ft.Text("Speed:", size=14, weight=ft.FontWeight.BOLD),
