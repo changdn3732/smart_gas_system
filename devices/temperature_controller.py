@@ -4,12 +4,22 @@
 - RS-485 Modbus RTU 통신
 - 기능코드: 03 (Read), 06/16 (Write)
 """
-from pymodbus.client import ModbusSerialClient
+try:
+    from pymodbus.client import ModbusSerialClient
+except ImportError:
+    from pymodbus.client.sync import ModbusSerialClient
 from typing import Optional, Dict, Callable
 from dataclasses import dataclass
 from enum import Enum
 import time
 import random
+
+try:
+    import pymodbus
+    _PY_MB_VER = int(pymodbus.__version__.split('.')[0])
+except Exception:
+    _PY_MB_VER = 3
+_SLAVE_KW = 'slave' if _PY_MB_VER >= 3 else 'unit'
 
 # ==================== 레지스터 주소 정의 ====================
 
@@ -239,7 +249,7 @@ class UT32AController:
             result = self.client.read_holding_registers(
                 address=address,
                 count=1,
-                device_id=self.slave_id
+                **{_SLAVE_KW: self.slave_id}
             )
             
             if result.isError():
@@ -260,7 +270,7 @@ class UT32AController:
             result = self.client.write_register(
                 address=address,
                 value=value,
-                device_id=self.slave_id
+                **{_SLAVE_KW: self.slave_id}
             )
             
             if result.isError():

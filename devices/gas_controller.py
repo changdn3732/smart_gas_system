@@ -4,13 +4,23 @@ MFC / BPR 가스 제어기 통신 모듈
 - Slave ID: 5 (MFC), 6 (BPR)
 - Alicat 장비 기반 레지스터 맵
 """
-from pymodbus.client import ModbusSerialClient
+try:
+    from pymodbus.client import ModbusSerialClient
+except ImportError:
+    from pymodbus.client.sync import ModbusSerialClient
 from typing import Optional, Dict, Callable
 from dataclasses import dataclass
 from enum import Enum
 import struct
 import time
 import random
+
+try:
+    import pymodbus
+    _PY_MB_VER = int(pymodbus.__version__.split('.')[0])
+except Exception:
+    _PY_MB_VER = 3
+_SLAVE_KW = 'slave' if _PY_MB_VER >= 3 else 'unit'
 
 # ==================== 레지스터 주소 정의 ====================
 # New Firmware (10v07+) — Input Register로 읽기 (FC04)
@@ -161,7 +171,7 @@ class GasDeviceReader:
             result = self.client.read_input_registers(
                 address=address,
                 count=2,
-                device_id=self.slave_id
+                **{_SLAVE_KW: self.slave_id}
             )
 
             if result.isError():
@@ -185,7 +195,7 @@ class GasDeviceReader:
             result = self.client.read_input_registers(
                 address=address,
                 count=1,
-                device_id=self.slave_id
+                **{_SLAVE_KW: self.slave_id}
             )
 
             if result.isError():
@@ -282,8 +292,7 @@ class GasDeviceReader:
             self.client.write_registers(
                 address=address,
                 values=registers,
-                device_id=self.slave_id,
-                no_response_expected=True,
+                **{_SLAVE_KW: self.slave_id},
             )
             time.sleep(0.05)
             if hasattr(self.client, 'socket') and self.client.socket:
@@ -306,8 +315,7 @@ class GasDeviceReader:
             self.client.write_registers(
                 address=address,
                 values=values,
-                device_id=self.slave_id,
-                no_response_expected=True,
+                **{_SLAVE_KW: self.slave_id},
             )
             time.sleep(0.05)
             if hasattr(self.client, 'socket') and self.client.socket:

@@ -1,7 +1,17 @@
 from devices.gas_controller import GasDeviceReader, DeviceType
 from devices.temperature_controller import TemperatureController
-from pymodbus.client import ModbusSerialClient
+try:
+    from pymodbus.client import ModbusSerialClient
+except ImportError:
+    from pymodbus.client.sync import ModbusSerialClient
 import struct
+
+try:
+    import pymodbus
+    _PY_MB_VER = int(pymodbus.__version__.split('.')[0])
+except Exception:
+    _PY_MB_VER = 3
+_SLAVE_KW = 'slave' if _PY_MB_VER >= 3 else 'unit'
 
 
 class DeviceService:
@@ -147,7 +157,7 @@ class DeviceService:
         if self.temp_client:
             try:
                 resp = self.temp_client.read_holding_registers(
-                    address=0x0002, count=1, device_id=1
+                    address=0x0002, count=1, **{_SLAVE_KW: 1}
                 )
                 if not resp.isError():
                     result["temperature"] = True
