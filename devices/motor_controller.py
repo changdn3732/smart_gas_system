@@ -41,10 +41,10 @@ _SLAVE_KW = 'device_id'
 
 # ==================== 상수 정의 ====================
 
-STEP_ANGLE = 0.36
-PULSE_PER_REV = 1000
+STEP_ANGLE = 0.72
+PULSE_PER_REV = 500
 MM_PER_REV = 5
-PULSE_PER_MM = 200
+PULSE_PER_MM = 100
 
 CMD_REGISTER = 0x0000
 

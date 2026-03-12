@@ -73,9 +73,9 @@ class MotorApp:
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
         self.manual_speeds = [
-            {"label": "0.05 mm/s", "pps": 10},
-            {"label": "1 mm/s", "pps": 200},
-            {"label": "3 mm/s", "pps": 600},
+            {"label": "0.05 mm/s", "pps": 5},
+            {"label": "0.5 mm/s", "pps": 50},
+            {"label": "3 mm/s", "pps": 300},
         ]
         self.speed_mode_idx = 0
         self.motor_running = [False, False, False, False]
@@ -946,6 +946,17 @@ class MotorApp:
 
     def _toggle_speed_mode(self):
         self.speed_mode_idx = (self.speed_mode_idx + 1) % len(self.manual_speeds)
+        new_pps = self.manual_speeds[self.speed_mode_idx]["pps"]
+        if self.motor_ctrl and self.motor_ctrl.connected:
+            for mi in range(4):
+                if self.motor_running[mi]:
+                    motor_id = MOTOR_IDS[mi]
+                    d = self.motor_manual_dir[mi]
+                    mapped_dir = DIRECTION_MAP.get(d, 'plus')
+                    try:
+                        self.motor_ctrl.start_motor(motor_id, mapped_dir, new_pps)
+                    except Exception:
+                        pass
         self._render_schedule()
         self.page.update()
 
