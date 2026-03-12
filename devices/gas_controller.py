@@ -20,12 +20,12 @@ import random
 def _detect_slave_kw(client) -> str:
     try:
         sig = inspect.signature(client.write_register)
-        for kw in ('slave', 'unit'):
+        for kw in ('device_id', 'slave', 'unit'):
             if kw in sig.parameters:
                 return kw
     except Exception:
         pass
-    for kw in ('slave', 'unit'):
+    for kw in ('device_id', 'slave', 'unit'):
         try:
             client.read_holding_registers(0, count=1, **{kw: 1})
             return kw
@@ -33,9 +33,9 @@ def _detect_slave_kw(client) -> str:
             continue
         except Exception:
             return kw
-    return 'unit'
+    return 'device_id'
 
-_SLAVE_KW = 'unit'
+_SLAVE_KW = 'device_id'
 
 # ==================== 레지스터 주소 정의 ====================
 # New Firmware (10v07+) — Input Register로 읽기 (FC04)

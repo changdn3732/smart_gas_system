@@ -21,12 +21,12 @@ def _detect_slave_kw(client) -> str:
     """pymodbus 버전에 맞는 slave ID 키워드를 자동 감지"""
     try:
         sig = inspect.signature(client.write_register)
-        for kw in ('slave', 'unit'):
+        for kw in ('device_id', 'slave', 'unit'):
             if kw in sig.parameters:
                 return kw
     except Exception:
         pass
-    for kw in ('slave', 'unit'):
+    for kw in ('device_id', 'slave', 'unit'):
         try:
             client.read_holding_registers(0, count=1, **{kw: 1})
             return kw
@@ -34,9 +34,9 @@ def _detect_slave_kw(client) -> str:
             continue
         except Exception:
             return kw
-    return 'unit'
+    return 'device_id'
 
-_SLAVE_KW = 'unit'
+_SLAVE_KW = 'device_id'
 
 
 # ==================== 상수 정의 ====================
