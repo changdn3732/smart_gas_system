@@ -560,47 +560,75 @@ class MotorApp:
         self.page.update()
 
     def _diagnose_serial(self):
-        """Raw serial 진단: Modbus + 에코 테스트"""
+        """Raw serial 진단: N/E/O parity 자동 시도"""
         import serial as pyserial
+        import struct
+        import time as _t
+
         port = self._port_dropdown.value or "COM7"
         try:
             baud = int(self._baud_input.value)
         except (ValueError, TypeError):
             baud = 9600
-        parity_map = {"N": pyserial.PARITY_NONE, "E": pyserial.PARITY_EVEN,
-                       "O": pyserial.PARITY_ODD}
-        par = parity_map.get(self._parity_dropdown.value, pyserial.PARITY_NONE)
 
-        lines = [f"=== Diagnose {port} @ {baud} parity={self._parity_dropdown.value} ==="]
+        parity_list = [
+            ("N", pyserial.PARITY_NONE),
+            ("E", pyserial.PARITY_EVEN),
+            ("O", pyserial.PARITY_ODD),
+        ]
 
-        try:
-            ser = pyserial.Serial(port=port, baudrate=baud, parity=par,
-                                  stopbits=1, bytesize=8, timeout=1)
-        except Exception as e:
-            lines.append(f"Port open FAIL: {e}")
-            self._diag_text.value = "\n".join(lines)
-            self.page.update()
-            return
+        lines = [f"=== Auto-Diagnose {port} @ {baud} ==="]
+        best_parity = None
 
-        lines.append(f"Port open OK: {ser.name}")
+        for par_name, par_val in parity_list:
+            lines.append(f"\n--- Parity={par_name} ---")
+            try:
+                ser = pyserial.Serial(port=port, baudrate=baud, parity=par_val,
+                                      stopbits=1, bytesize=8, timeout=0.5)
+            except Exception as e:
+                lines.append(f"  Port open FAIL: {e}")
+                continue
 
-        import struct
-        for slave_id in (1, 2):
-            # Modbus RTU: Function 03 (Read Holding Registers), Addr=0x0000, Qty=1
-            req = struct.pack('>BBH H', slave_id, 0x03, 0x0000, 0x0001)
-            crc = self._modbus_crc(req)
-            req += struct.pack('<H', crc)
+            ok_count = 0
+            for slave_id in (1, 2):
+                req = struct.pack('>BBH H', slave_id, 0x03, 0x0000, 0x0001)
+                crc = self._modbus_crc(req)
+                req += struct.pack('<H', crc)
 
-            ser.reset_input_buffer()
-            ser.write(req)
-            import time as _t
-            _t.sleep(0.3)
-            resp = ser.read(ser.in_waiting or 0)
-            hex_str = resp.hex(' ').upper() if resp else "(no response)"
-            lines.append(f"Modbus slave={slave_id}: TX={req.hex(' ').upper()}")
-            lines.append(f"  RX={hex_str} ({len(resp)} bytes)")
+                ser.reset_input_buffer()
+                ser.write(req)
+                ser.flush()
+                _t.sleep(0.1)
+                resp = ser.read(7)
+                if len(resp) < 7:
+                    extra = ser.read(ser.in_waiting or 0)
+                    resp += extra
 
-        ser.close()
+                hex_tx = req.hex(' ').upper()
+                hex_rx = resp.hex(' ').upper() if resp else "(no response)"
+                lines.append(f"  Slave {slave_id}: TX={hex_tx}")
+                lines.append(f"           RX={hex_rx} ({len(resp)} bytes)")
+
+                if len(resp) >= 5 and resp[0] == slave_id and resp[1] == 0x03:
+                    lines.append(f"           ✓ Valid Modbus response!")
+                    ok_count += 1
+                elif len(resp) >= 3 and resp[0] == slave_id and resp[1] == 0x83:
+                    lines.append(f"           ✓ Modbus exception (code={resp[2]})")
+                    ok_count += 1
+                else:
+                    lines.append(f"           ✗ Invalid / no response")
+
+            ser.close()
+            if ok_count > 0 and best_parity is None:
+                best_parity = par_name
+
+        if best_parity:
+            lines.append(f"\n★ Recommended parity: {best_parity}")
+            lines.append(f"  Settings에서 Parity를 '{best_parity}'로 변경 후 Connect하세요.")
+        else:
+            lines.append(f"\n✗ 어떤 parity에서도 유효한 응답이 없습니다.")
+            lines.append(f"  배선, 슬레이브 ID, Baud rate를 확인해주세요.")
+
         self._diag_text.value = "\n".join(lines)
         self.page.update()
 
