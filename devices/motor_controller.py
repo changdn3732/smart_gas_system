@@ -200,8 +200,19 @@ class PMC2HSPDriver:
         if not self.connected or not self.client:
             return False
         try:
-            result = self.client.write_register(address=address, value=value, **{_SLAVE_KW: self.slave_id})
-            if result.isError():
+            # Prefer FC06 (single register write), and fallback to FC16 for devices
+            # that only accept multiple-register write framing.
+            result = self.client.write_register(
+                address=address, value=value, **{_SLAVE_KW: self.slave_id}
+            )
+            if not result.isError():
+                return True
+            self.log(f"FC06 실패(addr=0x{address:04X}, val={value}) -> FC16 재시도")
+            result16 = self.client.write_registers(
+                address=address, values=[value], **{_SLAVE_KW: self.slave_id}
+            )
+            if result16.isError():
+                self.log(f"FC16 실패(addr=0x{address:04X}, val={value}): {result16}")
                 return False
             return True
         except Exception as e:

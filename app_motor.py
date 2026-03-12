@@ -966,19 +966,29 @@ class MotorApp:
     def _manual_motor_start(self, motor_idx, direction):
         if self.schedule_running:
             return
-        self.motor_running[motor_idx] = True
         self.motor_manual_dir[motor_idx] = direction
-        self._highlight_motor(motor_idx, True)
         if self.motor_ctrl and self.motor_ctrl.connected:
             speed = self.manual_speeds[self.speed_mode_idx]["pps"]
             motor_id = MOTOR_IDS[motor_idx]
             mapped_dir = DIRECTION_MAP.get(direction, 'plus')
-            print(f"[Manual] START motor={motor_id} dir={mapped_dir} (speed already set: {speed}PPS)")
+            print(f"[Manual] START motor={motor_id} dir={mapped_dir} speed={speed}PPS")
             try:
+                # Always write current dropdown speed before start (PDF 41107 basis).
+                ok_speed = self.motor_ctrl.set_speed_all(speed)
+                print(f"[Manual] set_speed_all({speed}) -> {'OK' if ok_speed else 'FAIL'}")
+                if not ok_speed:
+                    return
                 ok = self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
                 print(f"[Manual] start → {'OK' if ok else 'FAIL'}")
+                if ok:
+                    self.motor_running[motor_idx] = True
+                    self._highlight_motor(motor_idx, True)
             except Exception as ex:
                 print(f"Manual start error: {ex}")
+        else:
+            # Keep simulator-like behavior while disconnected.
+            self.motor_running[motor_idx] = True
+            self._highlight_motor(motor_idx, True)
 
     def _manual_motor_stop(self, motor_idx):
         if self.schedule_running:
