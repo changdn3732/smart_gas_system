@@ -401,10 +401,12 @@ class MotorController:
         'lower_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
     }
 
-    def __init__(self, port: str = 'COM7', baudrate: int = 9600, parity: str = 'N'):
+    def __init__(self, port: str = 'COM7', baudrate: int = 9600,
+                 parity: str = 'N', rs485_mode: bool = False):
         self.port = port
         self.baudrate = baudrate
         self.parity = parity
+        self.rs485_mode = rs485_mode
         self.client: Optional[ModbusSerialClient] = None
         self.connected = False
         self.driver1 = PMC2HSPDriver(slave_id=1, port=port, baudrate=baudrate)
@@ -427,6 +429,24 @@ class MotorController:
             if not self.client.connect():
                 self.log(f"Modbus 연결 실패: {self.port}")
                 return False
+
+            if self.rs485_mode:
+                try:
+                    import serial.rs485
+                    raw_ser = self._get_raw_serial_from_client()
+                    if raw_ser:
+                        raw_ser.rs485_mode = serial.rs485.RS485Settings(
+                            rts_level_for_tx=True,
+                            rts_level_for_rx=False,
+                            delay_before_tx=0.0,
+                            delay_before_rx=0.005,
+                        )
+                        self.log("RS-485 mode enabled")
+                    else:
+                        self.log("RS-485 mode: could not access serial object")
+                except Exception as e:
+                    self.log(f"RS-485 mode failed: {e}")
+
             _SLAVE_KW = _detect_slave_kw(self.client)
             self.log(f"pymodbus keyword: {_SLAVE_KW}")
             self.connected = True
@@ -438,6 +458,16 @@ class MotorController:
         except Exception as e:
             self.log(f"연결 오류: {e}")
             return False
+
+    def _get_raw_serial_from_client(self):
+        """pymodbus client에서 pyserial Serial 객체 추출"""
+        if not self.client:
+            return None
+        for attr in ('socket', 'serial', '_socket', '_serial', 'transport'):
+            obj = getattr(self.client, attr, None)
+            if obj and hasattr(obj, 'rs485_mode'):
+                return obj
+        return None
 
     def disconnect(self):
         self.driver1.disconnect()

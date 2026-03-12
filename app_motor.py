@@ -483,6 +483,7 @@ class MotorApp:
             width=100, value="N", text_size=13, dense=True,
             options=[ft.DropdownOption("N"), ft.DropdownOption("E"), ft.DropdownOption("O")],
         )
+        self._rs485_checkbox = ft.Checkbox(label="RS-485 mode", value=False)
 
         refresh_btn = ft.ElevatedButton("Refresh Ports", on_click=lambda e: self._refresh_ports())
         connect_btn = ft.ElevatedButton("Connect", bgcolor="#4CAF50", color="white",
@@ -502,7 +503,8 @@ class MotorApp:
                 ft.Divider(),
                 ft.Row([ft.Text("Port:", width=80), self._port_dropdown, refresh_btn]),
                 ft.Row([ft.Text("Baud:", width=80), self._baud_input,
-                        ft.Text("Parity:", width=50), self._parity_dropdown]),
+                        ft.Text("Parity:", width=50), self._parity_dropdown,
+                        self._rs485_checkbox]),
                 ft.Row([connect_btn, disconnect_btn, diagnose_btn]),
                 self._conn_status,
                 ft.Divider(),
@@ -541,7 +543,8 @@ class MotorApp:
         except (ValueError, TypeError):
             baud = 9600
         parity = self._parity_dropdown.value or "N"
-        self.motor_ctrl = MotorController(port=port, baudrate=baud, parity=parity)
+        rs485 = self._rs485_checkbox.value or False
+        self.motor_ctrl = MotorController(port=port, baudrate=baud, parity=parity, rs485_mode=rs485)
         ok = self.motor_ctrl.connect()
         if ok:
             verify = self.motor_ctrl.verify_connection()
@@ -560,7 +563,7 @@ class MotorApp:
         self.page.update()
 
     def _diagnose_serial(self):
-        """Raw serial 진단: N/E/O parity 자동 시도"""
+        """종합 시리얼 진단: RS-485 모드, parity, baud 자동 테스트"""
         import serial as pyserial
         import struct
         import time as _t
@@ -571,63 +574,153 @@ class MotorApp:
         except (ValueError, TypeError):
             baud = 9600
 
-        parity_list = [
-            ("N", pyserial.PARITY_NONE),
-            ("E", pyserial.PARITY_EVEN),
-            ("O", pyserial.PARITY_ODD),
-        ]
+        lines = [f"=== Serial Diagnose {port} ==="]
 
-        lines = [f"=== Auto-Diagnose {port} @ {baud} ==="]
-        best_parity = None
+        def _try_modbus(ser, slave_id):
+            req = struct.pack('>BBH H', slave_id, 0x03, 0x0000, 0x0001)
+            crc = self._modbus_crc(req)
+            req += struct.pack('<H', crc)
+            ser.reset_input_buffer()
+            ser.write(req)
+            ser.flush()
+            _t.sleep(0.05)
+            resp = ser.read(7)
+            if len(resp) < 7:
+                _t.sleep(0.2)
+                extra = ser.read(ser.in_waiting or 0)
+                resp += extra
+            return req, resp
 
-        for par_name, par_val in parity_list:
-            lines.append(f"\n--- Parity={par_name} ---")
-            try:
-                ser = pyserial.Serial(port=port, baudrate=baud, parity=par_val,
-                                      stopbits=1, bytesize=8, timeout=0.5)
-            except Exception as e:
-                lines.append(f"  Port open FAIL: {e}")
-                continue
+        def _check_resp(resp, slave_id):
+            if len(resp) >= 5 and resp[0] == slave_id and resp[1] == 0x03:
+                return "OK"
+            if len(resp) >= 3 and resp[0] == slave_id and resp[1] == 0x83:
+                return f"Exception(code={resp[2]})"
+            return None
 
-            ok_count = 0
-            for slave_id in (1, 2):
-                req = struct.pack('>BBH H', slave_id, 0x03, 0x0000, 0x0001)
-                crc = self._modbus_crc(req)
-                req += struct.pack('<H', crc)
-
-                ser.reset_input_buffer()
-                ser.write(req)
-                ser.flush()
-                _t.sleep(0.1)
-                resp = ser.read(7)
-                if len(resp) < 7:
-                    extra = ser.read(ser.in_waiting or 0)
-                    resp += extra
-
-                hex_tx = req.hex(' ').upper()
-                hex_rx = resp.hex(' ').upper() if resp else "(no response)"
-                lines.append(f"  Slave {slave_id}: TX={hex_tx}")
-                lines.append(f"           RX={hex_rx} ({len(resp)} bytes)")
-
-                if len(resp) >= 5 and resp[0] == slave_id and resp[1] == 0x03:
-                    lines.append(f"           ✓ Valid Modbus response!")
-                    ok_count += 1
-                elif len(resp) >= 3 and resp[0] == slave_id and resp[1] == 0x83:
-                    lines.append(f"           ✓ Modbus exception (code={resp[2]})")
-                    ok_count += 1
-                else:
-                    lines.append(f"           ✗ Invalid / no response")
-
+        # --- Step 1: 노이즈 체크 ---
+        lines.append("\n[1] Noise check (read without sending)")
+        try:
+            ser = pyserial.Serial(port=port, baudrate=baud, parity=pyserial.PARITY_NONE,
+                                  stopbits=1, bytesize=8, timeout=0.3)
+            ser.reset_input_buffer()
+            _t.sleep(0.3)
+            noise = ser.read(ser.in_waiting or 0)
+            if noise:
+                lines.append(f"  ⚠ Noise detected: {noise.hex(' ').upper()} ({len(noise)} bytes)")
+            else:
+                lines.append(f"  ✓ No noise on line")
             ser.close()
-            if ok_count > 0 and best_parity is None:
-                best_parity = par_name
+        except Exception as e:
+            lines.append(f"  Port open FAIL: {e}")
+            self._diag_text.value = "\n".join(lines)
+            self.page.update()
+            return
 
-        if best_parity:
-            lines.append(f"\n★ Recommended parity: {best_parity}")
-            lines.append(f"  Settings에서 Parity를 '{best_parity}'로 변경 후 Connect하세요.")
+        # --- Step 2: RS-485 모드 + parity 자동 시도 ---
+        rs485_modes = [("RS485-off", False), ("RS485-on", True)]
+        parity_list = [("N", pyserial.PARITY_NONE), ("E", pyserial.PARITY_EVEN), ("O", pyserial.PARITY_ODD)]
+        best_config = None
+
+        for rs_name, rs_enable in rs485_modes:
+            for par_name, par_val in parity_list:
+                label = f"{rs_name} / Parity={par_name} / Baud={baud}"
+                lines.append(f"\n[2] {label}")
+                try:
+                    ser = pyserial.Serial(port=port, baudrate=baud, parity=par_val,
+                                          stopbits=1, bytesize=8, timeout=0.5)
+                except Exception as e:
+                    lines.append(f"  Port FAIL: {e}")
+                    continue
+
+                if rs_enable:
+                    try:
+                        import serial.rs485
+                        ser.rs485_mode = serial.rs485.RS485Settings(
+                            rts_level_for_tx=True,
+                            rts_level_for_rx=False,
+                            delay_before_tx=0.0,
+                            delay_before_rx=0.005,
+                        )
+                        lines.append(f"  RS-485 mode enabled")
+                    except Exception as e:
+                        lines.append(f"  RS-485 mode FAIL: {e}")
+                        ser.close()
+                        continue
+
+                ok_count = 0
+                for slave_id in (1, 2):
+                    req, resp = _try_modbus(ser, slave_id)
+                    hex_rx = resp.hex(' ').upper() if resp else "(none)"
+                    lines.append(f"  S{slave_id} TX={req.hex(' ').upper()}")
+                    lines.append(f"     RX={hex_rx} ({len(resp)}B)")
+                    status = _check_resp(resp, slave_id)
+                    if status:
+                        lines.append(f"     ✓ {status}")
+                        ok_count += 1
+                    else:
+                        lines.append(f"     ✗ Invalid")
+
+                ser.close()
+                if ok_count > 0 and best_config is None:
+                    best_config = (rs_name, par_name, baud)
+
+        # --- Step 3: 다른 baud rate 시도 (기본 baud에서 실패한 경우) ---
+        if best_config is None:
+            alt_bauds = [b for b in [9600, 19200, 38400, 57600, 115200] if b != baud]
+            for alt_baud in alt_bauds:
+                for par_name, par_val in parity_list:
+                    label = f"RS485-on / Parity={par_name} / Baud={alt_baud}"
+                    lines.append(f"\n[3] {label}")
+                    try:
+                        ser = pyserial.Serial(port=port, baudrate=alt_baud, parity=par_val,
+                                              stopbits=1, bytesize=8, timeout=0.5)
+                        try:
+                            import serial.rs485
+                            ser.rs485_mode = serial.rs485.RS485Settings(
+                                rts_level_for_tx=True, rts_level_for_rx=False,
+                                delay_before_tx=0.0, delay_before_rx=0.005)
+                        except Exception:
+                            pass
+
+                        ok_count = 0
+                        for slave_id in (1, 2):
+                            req, resp = _try_modbus(ser, slave_id)
+                            hex_rx = resp.hex(' ').upper() if resp else "(none)"
+                            lines.append(f"  S{slave_id} RX={hex_rx} ({len(resp)}B)")
+                            status = _check_resp(resp, slave_id)
+                            if status:
+                                lines.append(f"     ✓ {status}")
+                                ok_count += 1
+
+                        ser.close()
+                        if ok_count > 0 and best_config is None:
+                            best_config = ("RS485-on", par_name, alt_baud)
+                            break
+                    except Exception:
+                        continue
+                if best_config:
+                    break
+
+        # --- 결과 ---
+        lines.append("\n" + "=" * 40)
+        if best_config:
+            rs, par, bd = best_config
+            lines.append(f"★ 통신 성공! 설정: {rs} / Parity={par} / Baud={bd}")
+            if "RS485-on" in rs:
+                lines.append(f"  → MotorController에 RS-485 모드 자동 적용 필요")
+            lines.append(f"  → Settings에서 Parity={par}, Baud={bd} 설정 후 Connect")
         else:
-            lines.append(f"\n✗ 어떤 parity에서도 유효한 응답이 없습니다.")
-            lines.append(f"  배선, 슬레이브 ID, Baud rate를 확인해주세요.")
+            lines.append("✗ 모든 조합에서 유효한 Modbus 응답 없음")
+            lines.append("확인사항:")
+            lines.append("  1. RS-485 A/B 배선 (A↔A, B↔B)")
+            lines.append("  2. 드라이버 슬레이브 ID (1, 2)")
+            lines.append("  3. 종단 저항 (120Ω)")
+            lines.append("  4. /dev/ttyS1이 RS-485 포트인지 확인")
+            lines.append("     (USB 어댑터면 /dev/ttyUSB0)")
+
+        self._diag_text.value = "\n".join(lines)
+        self.page.update()
 
         self._diag_text.value = "\n".join(lines)
         self.page.update()
