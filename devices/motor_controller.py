@@ -401,8 +401,8 @@ def speed_pps_to_deg_per_sec(pps: int) -> float:
 
 class MotorController:
     MOTOR_MAP = {
-        'upper_stage':  {'driver': 1, 'axis': MotorAxis.X, 'name': '상부 스테이지', 'type': 'linear'},
-        'upper_rotate': {'driver': 1, 'axis': MotorAxis.Y, 'name': '상부 회전',     'type': 'rotate'},
+        'upper_stage':  {'driver': 2, 'axis': MotorAxis.Y, 'name': '상부 스테이지', 'type': 'linear'},
+        'upper_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '상부 회전',     'type': 'rotate'},
         'lower_stage':  {'driver': 2, 'axis': MotorAxis.X, 'name': '하부 스테이지', 'type': 'linear'},
         'lower_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
     }
@@ -485,9 +485,9 @@ class MotorController:
 
     def _initialize_drivers(self):
         for drv in (self.driver1, self.driver2):
-            drv.set_pulse_scale(MotorAxis.X, 1, PULSE_PER_MM)
-            drv.set_pulse_scale(MotorAxis.Y, 1, PULSE_PER_MM)
-        self.log(f"드라이버 초기화 완료 (scale=1/{PULSE_PER_MM})")
+            drv.set_pulse_scale(MotorAxis.X, 1, 1)
+            drv.set_pulse_scale(MotorAxis.Y, 1, 1)
+        self.log("드라이버 초기화 완료 (scale=1/1, raw PPS)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
