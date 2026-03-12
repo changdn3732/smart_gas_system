@@ -546,6 +546,9 @@ class MotorApp:
             v_str = " | ".join(f"D{k}:{v}" for k, v in verify.items())
             all_ok = all("OK" in str(v) for v in verify.values())
             if all_ok:
+                init_speed = self.manual_speeds[self.speed_mode_idx]["pps"]
+                self.motor_ctrl.set_speed_all(init_speed)
+                print(f"[Init] speed_ratio set to {init_speed} PPS")
                 self._conn_status.value = f"Connected ({port}) [{v_str}]"
                 self._conn_status.color = "#4CAF50"
             else:
@@ -951,16 +954,13 @@ class MotorApp:
                 self.speed_mode_idx = i
                 break
         new_pps = self.manual_speeds[self.speed_mode_idx]["pps"]
+        print(f"[Speed] dropdown → {selected} = {new_pps} PPS")
         if self.motor_ctrl and self.motor_ctrl.connected:
-            for mi in range(4):
-                if self.motor_running[mi]:
-                    motor_id = MOTOR_IDS[mi]
-                    d = self.motor_manual_dir[mi]
-                    mapped_dir = DIRECTION_MAP.get(d, 'plus')
-                    try:
-                        self.motor_ctrl.start_motor(motor_id, mapped_dir, new_pps)
-                    except Exception:
-                        pass
+            try:
+                ok = self.motor_ctrl.set_speed_all(new_pps)
+                print(f"[Speed] set_speed_all({new_pps}) → {'OK' if ok else 'FAIL'}")
+            except Exception as ex:
+                print(f"[Speed] error: {ex}")
         self.page.update()
 
     def _manual_motor_start(self, motor_idx, direction):
@@ -973,11 +973,10 @@ class MotorApp:
             speed = self.manual_speeds[self.speed_mode_idx]["pps"]
             motor_id = MOTOR_IDS[motor_idx]
             mapped_dir = DIRECTION_MAP.get(direction, 'plus')
-            print(f"[Manual] motor={motor_id} dir={mapped_dir} speed={speed}PPS "
-                  f"({self.manual_speeds[self.speed_mode_idx]['label']})")
+            print(f"[Manual] START motor={motor_id} dir={mapped_dir} (speed already set: {speed}PPS)")
             try:
                 ok = self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
-                print(f"[Manual] start_motor → {'OK' if ok else 'FAIL'}")
+                print(f"[Manual] start → {'OK' if ok else 'FAIL'}")
             except Exception as ex:
                 print(f"Manual start error: {ex}")
 

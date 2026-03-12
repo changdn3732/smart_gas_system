@@ -287,25 +287,24 @@ class PMC2HSPDriver:
     def stop_all(self, immediate: bool = False) -> bool:
         return self.stop(MotorAxis.X, immediate) and self.stop(MotorAxis.Y, immediate)
 
+    def write_speed_ratio(self, axis: MotorAxis, speed: int) -> bool:
+        """PDF 41107(X) / 41113(Y) speed_ratio 레지스터에 속도값 쓰기"""
+        regs = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
+        addr = regs['speed_ratio']
+        ok = self._write_register(addr, speed)
+        self.log(f"write_speed_ratio: axis={axis.value} speed={speed} "
+                 f"addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
+        return ok
+
     def move_with_speed(self, axis: MotorAxis, direction: MotorDirection,
                         speed: int) -> bool:
         self.log(f"move_with_speed: axis={axis.value} dir={direction.value} speed={speed}PPS")
-        ok1 = self.set_speed(axis, speed, 1)
-        self.log(f"  set_speed({speed}) → {'OK' if ok1 else 'FAIL'}")
-        if not ok1:
-            return False
-        time.sleep(0.05)
-        ok2 = self.select_speed(axis, 1)
-        self.log(f"  select_speed(1) → {'OK' if ok2 else 'FAIL'}")
-        if not ok2:
-            return False
-        time.sleep(0.05)
-        ok3 = self.start_continuous(axis, direction)
-        self.log(f"  start_continuous → {'OK' if ok3 else 'FAIL'}")
-        if ok3:
+        ok = self.start_continuous(axis, direction)
+        self.log(f"  start_continuous → {'OK' if ok else 'FAIL'}")
+        if ok:
             status = self.x_status if axis == MotorAxis.X else self.y_status
             status.speed = speed
-        return ok3
+        return ok
 
     # ── P1 전용 프로토콜 (STX/ETX 프레임) ──
 
@@ -517,6 +516,17 @@ class MotorController:
         cfg = self.MOTOR_MAP[motor_id]
         drv = self.driver1 if cfg['driver'] == 1 else self.driver2
         return drv, cfg['axis']
+
+    def set_speed_all(self, speed: int) -> bool:
+        """모든 드라이버의 X/Y 축 speed_ratio 레지스터에 속도 쓰기 (PDF 41107)"""
+        if not self.connected:
+            return False
+        ok = True
+        for drv in (self.driver1, self.driver2):
+            for axis in (MotorAxis.X, MotorAxis.Y):
+                if not drv.write_speed_ratio(axis, speed):
+                    ok = False
+        return ok
 
     def start_motor(self, motor_id: str, direction: str, speed: int = 1000) -> bool:
         if not self.connected:
