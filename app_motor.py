@@ -944,8 +944,12 @@ class MotorApp:
         self._render_schedule()
         self.page.update()
 
-    def _toggle_speed_mode(self):
-        self.speed_mode_idx = (self.speed_mode_idx + 1) % len(self.manual_speeds)
+    def _on_speed_dropdown_change(self, e):
+        selected = e.control.value
+        for i, s in enumerate(self.manual_speeds):
+            if s["label"] == selected:
+                self.speed_mode_idx = i
+                break
         new_pps = self.manual_speeds[self.speed_mode_idx]["pps"]
         if self.motor_ctrl and self.motor_ctrl.connected:
             for mi in range(4):
@@ -957,7 +961,6 @@ class MotorApp:
                         self.motor_ctrl.start_motor(motor_id, mapped_dir, new_pps)
                     except Exception:
                         pass
-        self._render_schedule()
         self.page.update()
 
     def _manual_motor_start(self, motor_idx, direction):
@@ -1149,18 +1152,16 @@ class MotorApp:
             ft.Row([estop_btn], alignment=ft.MainAxisAlignment.CENTER))
 
     def _render_manual_mode(self):
-        spd_colors = ["#2196F3", "#FF9800", "#f44336"]
-        cur_spd = self.manual_speeds[self.speed_mode_idx]
-        spd_bg = spd_colors[self.speed_mode_idx]
-        speed_btn = ft.Container(
-            content=ft.Text(cur_spd["label"], size=14, weight=ft.FontWeight.BOLD,
-                            color="#ffffff", text_align=ft.TextAlign.CENTER),
-            width=180, height=40, bgcolor=spd_bg, border_radius=8,
-            alignment=ft.Alignment(0, 0),
-            on_click=lambda e: self._toggle_speed_mode(),
+        self._speed_dropdown = ft.Dropdown(
+            width=200, value=self.manual_speeds[self.speed_mode_idx]["label"],
+            text_size=14, dense=True,
+            options=[ft.DropdownOption(s["label"]) for s in self.manual_speeds],
+            on_change=lambda e: self._on_speed_dropdown_change(e),
         )
         self.schedule_content.controls.append(
-            ft.Row([speed_btn], alignment=ft.MainAxisAlignment.CENTER))
+            ft.Row([ft.Text("Speed:", size=14, weight=ft.FontWeight.BOLD),
+                    self._speed_dropdown],
+                   alignment=ft.MainAxisAlignment.CENTER))
         self.schedule_content.controls.append(ft.Container(height=10))
 
         for mi in range(4):
