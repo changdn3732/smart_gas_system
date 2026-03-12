@@ -12,8 +12,29 @@ except ImportError:
 from typing import Optional, Dict, Callable
 from dataclasses import dataclass
 from enum import Enum
+import inspect
 import threading
 import time
+
+
+def _detect_slave_kw(client) -> str:
+    """pymodbus 버전에 맞는 slave ID 키워드를 자동 감지"""
+    try:
+        sig = inspect.signature(client.write_register)
+        for kw in ('slave', 'unit'):
+            if kw in sig.parameters:
+                return kw
+    except Exception:
+        pass
+    for kw in ('slave', 'unit'):
+        try:
+            client.read_holding_registers(0, count=1, **{kw: 1})
+            return kw
+        except TypeError:
+            continue
+        except Exception:
+            return kw
+    return 'unit'
 
 _SLAVE_KW = 'unit'
 
@@ -397,6 +418,7 @@ class MotorController:
         print(f"[MotorController] {msg}")
 
     def connect(self) -> bool:
+        global _SLAVE_KW
         try:
             self.client = ModbusSerialClient(
                 port=self.port, baudrate=self.baudrate,
@@ -405,6 +427,8 @@ class MotorController:
             if not self.client.connect():
                 self.log(f"Modbus 연결 실패: {self.port}")
                 return False
+            _SLAVE_KW = _detect_slave_kw(self.client)
+            self.log(f"pymodbus keyword: {_SLAVE_KW}")
             self.connected = True
             self.log(f"Modbus 연결 성공: {self.port}")
             self.driver1.connect(self.client)

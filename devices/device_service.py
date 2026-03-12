@@ -4,7 +4,27 @@ try:
     from pymodbus.client import ModbusSerialClient
 except ImportError:
     from pymodbus.client.sync import ModbusSerialClient
+import inspect
 import struct
+
+
+def _detect_slave_kw(client) -> str:
+    try:
+        sig = inspect.signature(client.write_register)
+        for kw in ('slave', 'unit'):
+            if kw in sig.parameters:
+                return kw
+    except Exception:
+        pass
+    for kw in ('slave', 'unit'):
+        try:
+            client.read_holding_registers(0, count=1, **{kw: 1})
+            return kw
+        except TypeError:
+            continue
+        except Exception:
+            return kw
+    return 'unit'
 
 _SLAVE_KW = 'unit'
 
@@ -61,7 +81,9 @@ class DeviceService:
                     timeout=1, retries=1,
                 )
                 if self.temp_client.connect():
-                    print(f"Temp port {temp_port} 열기 성공")
+                    global _SLAVE_KW
+                    _SLAVE_KW = _detect_slave_kw(self.temp_client)
+                    print(f"Temp port {temp_port} 열기 성공 (kw={_SLAVE_KW})")
                     self.temp_device = TemperatureController(
                         client=self.temp_client, simulator=False
                     )

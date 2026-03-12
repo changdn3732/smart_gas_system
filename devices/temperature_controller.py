@@ -11,8 +11,28 @@ except ImportError:
 from typing import Optional, Dict, Callable
 from dataclasses import dataclass
 from enum import Enum
+import inspect
 import time
 import random
+
+
+def _detect_slave_kw(client) -> str:
+    try:
+        sig = inspect.signature(client.write_register)
+        for kw in ('slave', 'unit'):
+            if kw in sig.parameters:
+                return kw
+    except Exception:
+        pass
+    for kw in ('slave', 'unit'):
+        try:
+            client.read_holding_registers(0, count=1, **{kw: 1})
+            return kw
+        except TypeError:
+            continue
+        except Exception:
+            return kw
+    return 'unit'
 
 _SLAVE_KW = 'unit'
 
@@ -603,7 +623,9 @@ class TemperatureController:
                     return False
 
             self.connected = True
-            self.log("Modbus 연결 성공")
+            global _SLAVE_KW
+            _SLAVE_KW = _detect_slave_kw(self.client)
+            self.log(f"Modbus 연결 성공 (kw={_SLAVE_KW})")
 
             # 🔥 모든 slave에 공유 client 전달
             for controller in self.controllers.values():
