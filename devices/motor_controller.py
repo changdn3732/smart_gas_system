@@ -491,7 +491,11 @@ class MotorController:
                 resp = drv.client.read_holding_registers(
                     0x0000, count=1, **{_SLAVE_KW: drv.slave_id}
                 )
-                if resp.isError():
+                resp_str = str(resp)
+                if hasattr(resp, 'exception_code'):
+                    result[drv_id] = f"OK (응답 확인, exc={resp.exception_code})"
+                    drv.log(f"통신 검증 성공 (exception response = 장비 응답 있음)")
+                elif resp.isError():
                     result[drv_id] = f"응답 오류: {resp}"
                     drv.log(f"통신 검증 실패: {resp}")
                 else:
