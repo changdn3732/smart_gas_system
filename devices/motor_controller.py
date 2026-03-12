@@ -5,12 +5,23 @@
 - P1 전용 프로토콜: 절대/상대 좌표 이동, 직선 보간
 - 스텝각: 0.36°, 1회전 1000펄스, 리드 5mm
 """
-from pymodbus.client import ModbusSerialClient
+try:
+    from pymodbus.client import ModbusSerialClient
+except ImportError:
+    from pymodbus.client.sync import ModbusSerialClient
 from typing import Optional, Dict, Callable
 from dataclasses import dataclass
 from enum import Enum
 import threading
 import time
+
+# pymodbus 2.x uses 'unit', 3.x uses 'slave'
+try:
+    import pymodbus
+    _PY_MB_VER = int(pymodbus.__version__.split('.')[0])
+except Exception:
+    _PY_MB_VER = 3
+_SLAVE_KW = 'slave' if _PY_MB_VER >= 3 else 'unit'
 
 
 # ==================== 상수 정의 ====================
@@ -160,7 +171,7 @@ class PMC2HSPDriver:
             return False
         try:
             value = (hi << 8) | lo
-            result = self.client.write_register(CMD_REGISTER, value, slave=self.slave_id)
+            result = self.client.write_register(CMD_REGISTER, value, **{_SLAVE_KW: self.slave_id})
             if result.isError():
                 self.log(f"명령 실패: 0x{value:04X}")
                 return False
@@ -174,7 +185,7 @@ class PMC2HSPDriver:
         if not self.connected or not self.client:
             return False
         try:
-            result = self.client.write_register(address, value, slave=self.slave_id)
+            result = self.client.write_register(address, value, **{_SLAVE_KW: self.slave_id})
             if result.isError():
                 return False
             return True
@@ -186,7 +197,7 @@ class PMC2HSPDriver:
         if not self.connected or not self.client:
             return None
         try:
-            result = self.client.read_holding_registers(address, 1, slave=self.slave_id)
+            result = self.client.read_holding_registers(address, 1, **{_SLAVE_KW: self.slave_id})
             if result.isError():
                 return None
             return result.registers[0]
@@ -430,7 +441,7 @@ class MotorController:
         for drv_id, drv in [(1, self.driver1), (2, self.driver2)]:
             try:
                 resp = drv.client.read_holding_registers(
-                    0x0000, 1, slave=drv.slave_id
+                    0x0000, 1, **{_SLAVE_KW: drv.slave_id}
                 )
                 if resp.isError():
                     result[drv_id] = f"응답 오류: {resp}"
