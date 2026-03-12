@@ -479,26 +479,38 @@ class MotorApp:
         gap_apply_btn = ft.ElevatedButton("Apply", bgcolor="#2196F3", color="white",
                                           on_click=lambda e: self._apply_gap())
 
+        self._parity_dropdown = ft.Dropdown(
+            width=100, value="N", text_size=13, dense=True,
+            options=[ft.DropdownOption("N"), ft.DropdownOption("E"), ft.DropdownOption("O")],
+        )
+
         refresh_btn = ft.ElevatedButton("Refresh Ports", on_click=lambda e: self._refresh_ports())
         connect_btn = ft.ElevatedButton("Connect", bgcolor="#4CAF50", color="white",
                                         on_click=lambda e: self._connect_motor())
         disconnect_btn = ft.ElevatedButton("Disconnect", bgcolor="#f44336", color="white",
                                            on_click=lambda e: self._disconnect_motor())
+        diagnose_btn = ft.ElevatedButton("Diagnose", bgcolor="#FF9800", color="white",
+                                         on_click=lambda e: self._diagnose_serial())
         stop_all_btn = ft.ElevatedButton("STOP ALL", bgcolor="#ff0000", color="white",
                                          on_click=lambda e: self._confirm_emergency_stop())
+
+        self._diag_text = ft.Text("", size=11, selectable=True, color="#888888")
 
         return ft.Container(
             content=ft.Column([
                 ft.Text("Motor Settings", size=16, weight=ft.FontWeight.BOLD),
                 ft.Divider(),
                 ft.Row([ft.Text("Port:", width=80), self._port_dropdown, refresh_btn]),
-                ft.Row([ft.Text("Baudrate:", width=80), self._baud_input]),
-                ft.Row([connect_btn, disconnect_btn, ft.Container(width=20), self._conn_status]),
+                ft.Row([ft.Text("Baud:", width=80), self._baud_input,
+                        ft.Text("Parity:", width=50), self._parity_dropdown]),
+                ft.Row([connect_btn, disconnect_btn, diagnose_btn]),
+                self._conn_status,
                 ft.Divider(),
                 ft.Text("Stage Configuration", size=14, weight=ft.FontWeight.BOLD),
                 ft.Row([ft.Text("Gap (mm):", width=80), self._gap_input, gap_apply_btn]),
                 ft.Divider(),
                 stop_all_btn,
+                self._diag_text,
             ], spacing=10),
             padding=15,
         )
@@ -528,7 +540,8 @@ class MotorApp:
             baud = int(self._baud_input.value)
         except (ValueError, TypeError):
             baud = 9600
-        self.motor_ctrl = MotorController(port=port, baudrate=baud)
+        parity = self._parity_dropdown.value or "N"
+        self.motor_ctrl = MotorController(port=port, baudrate=baud, parity=parity)
         ok = self.motor_ctrl.connect()
         if ok:
             verify = self.motor_ctrl.verify_connection()
@@ -545,6 +558,63 @@ class MotorApp:
             self._conn_status.color = "red"
             self.motor_ctrl = None
         self.page.update()
+
+    def _diagnose_serial(self):
+        """Raw serial 진단: Modbus + 에코 테스트"""
+        import serial as pyserial
+        port = self._port_dropdown.value or "COM7"
+        try:
+            baud = int(self._baud_input.value)
+        except (ValueError, TypeError):
+            baud = 9600
+        parity_map = {"N": pyserial.PARITY_NONE, "E": pyserial.PARITY_EVEN,
+                       "O": pyserial.PARITY_ODD}
+        par = parity_map.get(self._parity_dropdown.value, pyserial.PARITY_NONE)
+
+        lines = [f"=== Diagnose {port} @ {baud} parity={self._parity_dropdown.value} ==="]
+
+        try:
+            ser = pyserial.Serial(port=port, baudrate=baud, parity=par,
+                                  stopbits=1, bytesize=8, timeout=1)
+        except Exception as e:
+            lines.append(f"Port open FAIL: {e}")
+            self._diag_text.value = "\n".join(lines)
+            self.page.update()
+            return
+
+        lines.append(f"Port open OK: {ser.name}")
+
+        import struct
+        for slave_id in (1, 2):
+            # Modbus RTU: Function 03 (Read Holding Registers), Addr=0x0000, Qty=1
+            req = struct.pack('>BBH H', slave_id, 0x03, 0x0000, 0x0001)
+            crc = self._modbus_crc(req)
+            req += struct.pack('<H', crc)
+
+            ser.reset_input_buffer()
+            ser.write(req)
+            import time as _t
+            _t.sleep(0.3)
+            resp = ser.read(ser.in_waiting or 0)
+            hex_str = resp.hex(' ').upper() if resp else "(no response)"
+            lines.append(f"Modbus slave={slave_id}: TX={req.hex(' ').upper()}")
+            lines.append(f"  RX={hex_str} ({len(resp)} bytes)")
+
+        ser.close()
+        self._diag_text.value = "\n".join(lines)
+        self.page.update()
+
+    @staticmethod
+    def _modbus_crc(data: bytes) -> int:
+        crc = 0xFFFF
+        for b in data:
+            crc ^= b
+            for _ in range(8):
+                if crc & 0x0001:
+                    crc = (crc >> 1) ^ 0xA001
+                else:
+                    crc >>= 1
+        return crc
 
     def _disconnect_motor(self):
         if self.motor_ctrl:

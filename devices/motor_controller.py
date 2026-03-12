@@ -375,9 +375,10 @@ class MotorController:
         'lower_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
     }
 
-    def __init__(self, port: str = 'COM7', baudrate: int = 9600):
+    def __init__(self, port: str = 'COM7', baudrate: int = 9600, parity: str = 'N'):
         self.port = port
         self.baudrate = baudrate
+        self.parity = parity
         self.client: Optional[ModbusSerialClient] = None
         self.connected = False
         self.driver1 = PMC2HSPDriver(slave_id=1, port=port, baudrate=baudrate)
@@ -394,7 +395,7 @@ class MotorController:
         try:
             self.client = ModbusSerialClient(
                 port=self.port, baudrate=self.baudrate,
-                parity='N', stopbits=1, bytesize=8, timeout=1,
+                parity=self.parity, stopbits=1, bytesize=8, timeout=1,
             )
             if not self.client.connect():
                 self.log(f"Modbus 연결 실패: {self.port}")
