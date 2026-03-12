@@ -468,7 +468,7 @@ class MotorApp:
 
     def _build_settings(self):
         self._port_dropdown = ft.Dropdown(
-            width=200, value="COM7", text_size=13, dense=True,
+            width=200, value="/dev/ttyS1", text_size=13, dense=True,
             options=self._scan_ports(),
         )
         self._baud_input = self._make_table_input("9600", w=100, h=34)
@@ -529,15 +529,15 @@ class MotorApp:
     def _scan_ports(self):
         if serial:
             ports = serial.tools.list_ports.comports()
-            return [ft.DropdownOption(p.device) for p in ports] or [ft.DropdownOption("COM7")]
-        return [ft.DropdownOption("COM7")]
+            return [ft.DropdownOption(p.device) for p in ports] or [ft.DropdownOption("/dev/ttyS1")]
+        return [ft.DropdownOption("/dev/ttyS1")]
 
     def _refresh_ports(self):
         self._port_dropdown.options = self._scan_ports()
         self.page.update()
 
     def _connect_motor(self):
-        port = self._port_dropdown.value or "COM7"
+        port = self._port_dropdown.value or "/dev/ttyS1"
         try:
             baud = int(self._baud_input.value)
         except (ValueError, TypeError):
@@ -568,7 +568,7 @@ class MotorApp:
         import struct
         import time as _t
 
-        port = self._port_dropdown.value or "COM7"
+        port = self._port_dropdown.value or "/dev/ttyS1"
         try:
             baud = int(self._baud_input.value)
         except (ValueError, TypeError):

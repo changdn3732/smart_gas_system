@@ -136,7 +136,7 @@ class MotorStatus:
 
 
 class PMC2HSPDriver:
-    def __init__(self, slave_id: int = 1, port: str = 'COM7', baudrate: int = 9600):
+    def __init__(self, slave_id: int = 1, port: str = '/dev/ttyS1', baudrate: int = 9600):
         self.slave_id = slave_id
         self.port = port
         self.baudrate = baudrate
@@ -401,7 +401,7 @@ class MotorController:
         'lower_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
     }
 
-    def __init__(self, port: str = 'COM7', baudrate: int = 9600,
+    def __init__(self, port: str = '/dev/ttyS1', baudrate: int = 9600,
                  parity: str = 'N', rs485_mode: bool = False):
         self.port = port
         self.baudrate = baudrate
