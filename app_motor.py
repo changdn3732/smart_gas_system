@@ -479,10 +479,7 @@ class MotorApp:
         gap_apply_btn = ft.ElevatedButton("Apply", bgcolor="#2196F3", color="white",
                                           on_click=lambda e: self._apply_gap())
 
-        self._parity_dropdown = ft.Dropdown(
-            width=100, value="N", text_size=13, dense=True,
-            options=[ft.DropdownOption("N"), ft.DropdownOption("E"), ft.DropdownOption("O")],
-        )
+        self._parity_label = ft.Text("Parity: N (fixed)", size=13, color="#888888")
         self._rs485_checkbox = ft.Checkbox(label="RS-485 mode", value=False)
 
         refresh_btn = ft.ElevatedButton("Refresh Ports", on_click=lambda e: self._refresh_ports())
@@ -503,8 +500,7 @@ class MotorApp:
                 ft.Divider(),
                 ft.Row([ft.Text("Port:", width=80), self._port_dropdown, refresh_btn]),
                 ft.Row([ft.Text("Baud:", width=80), self._baud_input,
-                        ft.Text("Parity:", width=50), self._parity_dropdown,
-                        self._rs485_checkbox]),
+                        self._parity_label, self._rs485_checkbox]),
                 ft.Row([connect_btn, disconnect_btn, diagnose_btn]),
                 self._conn_status,
                 ft.Divider(),
@@ -542,9 +538,8 @@ class MotorApp:
             baud = int(self._baud_input.value)
         except (ValueError, TypeError):
             baud = 9600
-        parity = self._parity_dropdown.value or "N"
         rs485 = self._rs485_checkbox.value or False
-        self.motor_ctrl = MotorController(port=port, baudrate=baud, parity=parity, rs485_mode=rs485)
+        self.motor_ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=rs485)
         ok = self.motor_ctrl.connect()
         if ok:
             verify = self.motor_ctrl.verify_connection()
@@ -610,14 +605,33 @@ class MotorApp:
             return None
 
         best = None
-        parity_opts = [("N", pyserial.PARITY_NONE),
-                       ("E", pyserial.PARITY_EVEN),
-                       ("O", pyserial.PARITY_ODD)]
 
-        # --- Test 1: 각 parity (RS-485 모드 없이) ---
-        for par_name, par_val in parity_opts:
-            lines.append(f"\n[Parity={par_name}]")
-            ser.parity = par_val
+        # --- Test 1: RS-485 OFF ---
+        lines.append(f"\n[Test 1] Parity=N, RS485=OFF")
+        for sid in (1, 2):
+            req, resp = _send_and_read(sid)
+            hx = resp.hex(' ').upper() if resp else "(none)"
+            lines.append(f"  S{sid} TX={req.hex(' ').upper()}")
+            lines.append(f"     RX={hx} ({len(resp)}B)")
+            v = _valid(resp, sid)
+            if v:
+                lines.append(f"     ✓ {v}")
+                if not best:
+                    best = ("RS485=OFF", False)
+
+        # --- Test 2: RS-485 ON ---
+        rs485_ok = False
+        try:
+            import serial.rs485
+            ser.rs485_mode = serial.rs485.RS485Settings(
+                rts_level_for_tx=True, rts_level_for_rx=False,
+                delay_before_tx=0.0, delay_before_rx=0.005)
+            rs485_ok = True
+        except Exception as e:
+            lines.append(f"\n[RS-485 mode FAIL: {e}]")
+
+        if rs485_ok:
+            lines.append(f"\n[Test 2] Parity=N, RS485=ON")
             _t.sleep(0.1)
             for sid in (1, 2):
                 req, resp = _send_and_read(sid)
@@ -628,41 +642,14 @@ class MotorApp:
                 if v:
                     lines.append(f"     ✓ {v}")
                     if not best:
-                        best = (f"Parity={par_name}", False)
+                        best = ("RS485=ON", True)
 
-        # --- Test 2: RS-485 모드 활성화 후 재시도 ---
-        rs485_ok = False
+        # --- Test 3: Loopback ---
+        lines.append(f"\n[Test 3] Loopback")
         try:
-            import serial.rs485
-            ser.parity = pyserial.PARITY_NONE
-            ser.rs485_mode = serial.rs485.RS485Settings(
-                rts_level_for_tx=True, rts_level_for_rx=False,
-                delay_before_tx=0.0, delay_before_rx=0.005)
-            rs485_ok = True
-            lines.append(f"\n[RS-485 mode ON]")
-        except Exception as e:
-            lines.append(f"\n[RS-485 mode FAIL: {e}]")
-
-        if rs485_ok:
-            for par_name, par_val in parity_opts:
-                lines.append(f"\n[RS485 + Parity={par_name}]")
-                ser.parity = par_val
-                _t.sleep(0.1)
-                for sid in (1, 2):
-                    req, resp = _send_and_read(sid)
-                    hx = resp.hex(' ').upper() if resp else "(none)"
-                    lines.append(f"  S{sid} TX={req.hex(' ').upper()}")
-                    lines.append(f"     RX={hx} ({len(resp)}B)")
-                    v = _valid(resp, sid)
-                    if v:
-                        lines.append(f"     ✓ {v}")
-                        if not best:
-                            best = (f"RS485 + Parity={par_name}", True)
-
-        # --- Test 3: Loopback (TX→RX 연결 확인) ---
-        lines.append(f"\n[Loopback test]")
-        ser.rs485_mode = None
-        ser.parity = pyserial.PARITY_NONE
+            ser.rs485_mode = None
+        except Exception:
+            pass
         _t.sleep(0.1)
         ser.reset_input_buffer()
         test_data = b'\xAA\x55\x01\x02'
@@ -671,12 +658,11 @@ class MotorApp:
         _t.sleep(0.3)
         echo = ser.read(ser.in_waiting or 0)
         if echo == test_data:
-            lines.append(f"  ✓ Echo match! (TX/RX가 연결됨 = 루프백)")
-            lines.append(f"  → RS-485라면 정상, RS-232라면 외부 장치 미연결")
+            lines.append(f"  ✓ Echo match (TX→RX 루프백 있음)")
         elif echo:
-            lines.append(f"  Partial echo: {echo.hex(' ').upper()} ({len(echo)}B)")
+            lines.append(f"  Partial: {echo.hex(' ').upper()} ({len(echo)}B)")
         else:
-            lines.append(f"  No echo (TX→RX 루프백 없음)")
+            lines.append(f"  No echo")
 
         ser.close()
 
@@ -684,19 +670,17 @@ class MotorApp:
         lines.append(f"\n{'=' * 40}")
         if best:
             cfg, needs_rs485 = best
-            lines.append(f"★ 통신 성공! 설정: {cfg}")
+            lines.append(f"★ 통신 성공! {cfg}")
             if needs_rs485:
-                lines.append(f"  → RS-485 mode 체크박스 ON 후 Connect")
+                lines.append(f"  → RS-485 mode 체크 후 Connect")
         else:
-            lines.append("✗ 유효한 Modbus 응답 없음")
+            lines.append("✗ Modbus 응답 없음")
             lines.append("")
-            lines.append("확인사항:")
+            lines.append("확인:")
             lines.append("  1. 드라이버 전원 ON?")
-            lines.append("  2. RS-485 A/B 배선 (A↔A, B↔B)")
-            lines.append("  3. 슬레이브 ID = 1, 2 맞는지")
-            lines.append("  4. /dev/ttyS1이 RS-485 포트?")
-            lines.append("     (USB 어댑터: /dev/ttyUSB0)")
-            lines.append("  5. 터미널에서 확인:")
+            lines.append("  2. RS-485 A/B 배선")
+            lines.append("  3. 슬레이브 ID = 1, 2")
+            lines.append("  4. 터미널에서 확인:")
             lines.append("     dmesg | grep ttyS")
             lines.append("     setserial /dev/ttyS1")
 
