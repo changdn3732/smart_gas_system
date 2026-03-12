@@ -186,7 +186,7 @@ class PMC2HSPDriver:
             return False
         try:
             value = (hi << 8) | lo
-            result = self.client.write_register(CMD_REGISTER, value, **{_SLAVE_KW: self.slave_id})
+            result = self.client.write_register(address=CMD_REGISTER, value=value, **{_SLAVE_KW: self.slave_id})
             if result.isError():
                 self.log(f"명령 실패: 0x{value:04X}")
                 return False
@@ -200,7 +200,7 @@ class PMC2HSPDriver:
         if not self.connected or not self.client:
             return False
         try:
-            result = self.client.write_register(address, value, **{_SLAVE_KW: self.slave_id})
+            result = self.client.write_register(address=address, value=value, **{_SLAVE_KW: self.slave_id})
             if result.isError():
                 return False
             return True
@@ -212,7 +212,7 @@ class PMC2HSPDriver:
         if not self.connected or not self.client:
             return None
         try:
-            result = self.client.read_holding_registers(address, 1, **{_SLAVE_KW: self.slave_id})
+            result = self.client.read_holding_registers(address, count=1, **{_SLAVE_KW: self.slave_id})
             if result.isError():
                 return None
             return result.registers[0]
@@ -459,7 +459,7 @@ class MotorController:
         for drv_id, drv in [(1, self.driver1), (2, self.driver2)]:
             try:
                 resp = drv.client.read_holding_registers(
-                    0x0000, 1, **{_SLAVE_KW: drv.slave_id}
+                    0x0000, count=1, **{_SLAVE_KW: drv.slave_id}
                 )
                 if resp.isError():
                     result[drv_id] = f"응답 오류: {resp}"
