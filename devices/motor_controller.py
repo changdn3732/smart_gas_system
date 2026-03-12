@@ -44,7 +44,7 @@ _SLAVE_KW = 'device_id'
 STEP_ANGLE = 0.72
 PULSE_PER_REV = 500
 MM_PER_REV = 5
-PULSE_PER_MM = 10
+PULSE_PER_MM = 100
 
 CMD_REGISTER = 0x0000
 
@@ -288,21 +288,15 @@ class PMC2HSPDriver:
         return self.stop(MotorAxis.X, immediate) and self.stop(MotorAxis.Y, immediate)
 
     def move_with_speed(self, axis: MotorAxis, direction: MotorDirection,
-                        speed: int, speed_preset: int = 0) -> bool:
-        preset = speed_preset if 1 <= speed_preset <= 4 else 0
-        self.log(f"move_with_speed: axis={axis.value} dir={direction.value} "
-                 f"speed={speed}PPS preset={preset}")
-        if preset > 0:
-            ok2 = self.select_speed(axis, preset)
-            self.log(f"  select_speed({preset}) → {'OK' if ok2 else 'FAIL'}")
-        else:
-            ok1 = self.set_speed(axis, speed, 1)
-            self.log(f"  set_speed → {'OK' if ok1 else 'FAIL'}")
-            if not ok1:
-                return False
-            time.sleep(0.05)
-            ok2 = self.select_speed(axis, 1)
-            self.log(f"  select_speed(1) → {'OK' if ok2 else 'FAIL'}")
+                        speed: int) -> bool:
+        self.log(f"move_with_speed: axis={axis.value} dir={direction.value} speed={speed}PPS")
+        ok1 = self.set_speed(axis, speed, 1)
+        self.log(f"  set_speed({speed}) → {'OK' if ok1 else 'FAIL'}")
+        if not ok1:
+            return False
+        time.sleep(0.05)
+        ok2 = self.select_speed(axis, 1)
+        self.log(f"  select_speed(1) → {'OK' if ok2 else 'FAIL'}")
         if not ok2:
             return False
         time.sleep(0.05)
@@ -466,8 +460,7 @@ class MotorController:
             self.log(f"Modbus 연결 성공: {self.port}")
             self.driver1.connect(self.client)
             self.driver2.connect(self.client)
-            self._initialize_drivers(
-                getattr(self, 'manual_speed_presets', None))
+            self._initialize_drivers()
             return True
         except Exception as e:
             self.log(f"연결 오류: {e}")
@@ -491,23 +484,11 @@ class MotorController:
             self.client = None
         self.connected = False
 
-    def _initialize_drivers(self, manual_speeds=None):
-        if manual_speeds is None:
-            manual_speeds = [5, 50, 300]
+    def _initialize_drivers(self):
         for drv in (self.driver1, self.driver2):
             drv.set_pulse_scale(MotorAxis.X, 1, 1)
             drv.set_pulse_scale(MotorAxis.Y, 1, 1)
-            for axis in (MotorAxis.X, MotorAxis.Y):
-                regs = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
-                self.log(f"Driver {drv.slave_id} {axis.value}-axis factory speeds:")
-                for i in range(4):
-                    val = drv._read_register(regs[f'drive_speed{i+1}'])
-                    self.log(f"  speed{i+1} = {val}")
-                for i, spd in enumerate(manual_speeds[:4]):
-                    drv.set_speed(axis, spd, i + 1)
-                    readback = drv._read_register(regs[f'drive_speed{i+1}'])
-                    self.log(f"  write speed{i+1}={spd} → readback={readback}")
-        self.log("드라이버 초기화 완료")
+        self.log("드라이버 초기화 완료 (scale=1/1, PULSE_PER_MM=100)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
@@ -537,8 +518,7 @@ class MotorController:
         drv = self.driver1 if cfg['driver'] == 1 else self.driver2
         return drv, cfg['axis']
 
-    def start_motor(self, motor_id: str, direction: str, speed: int = 1000,
-                    speed_preset: int = 0) -> bool:
+    def start_motor(self, motor_id: str, direction: str, speed: int = 1000) -> bool:
         if not self.connected:
             return False
         dir_map = {
@@ -550,7 +530,7 @@ class MotorController:
         if not d:
             return False
         drv, axis = self._get_driver_axis(motor_id)
-        ok = drv.move_with_speed(axis, d, speed, speed_preset)
+        ok = drv.move_with_speed(axis, d, speed)
         if ok:
             self.motor_speeds[motor_id] = speed
         return ok
