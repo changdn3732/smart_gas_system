@@ -948,7 +948,7 @@ class MotorApp:
     def _toggle_speed_mode(self):
         self.speed_mode_idx = (self.speed_mode_idx + 1) % len(self.manual_speeds)
         new_pps = self.manual_speeds[self.speed_mode_idx]["pps"]
-        preset_num = self.speed_mode_idx + 1
+        preset_num = len(self.manual_speeds) - self.speed_mode_idx
         if self.motor_ctrl and self.motor_ctrl.connected:
             for mi in range(4):
                 if self.motor_running[mi]:
@@ -971,7 +971,7 @@ class MotorApp:
         self._highlight_motor(motor_idx, True)
         if self.motor_ctrl and self.motor_ctrl.connected:
             speed = self.manual_speeds[self.speed_mode_idx]["pps"]
-            preset_num = self.speed_mode_idx + 1
+            preset_num = len(self.manual_speeds) - self.speed_mode_idx
             motor_id = MOTOR_IDS[motor_idx]
             mapped_dir = DIRECTION_MAP.get(direction, 'plus')
             print(f"[Manual] motor={motor_id} dir={mapped_dir} speed={speed}PPS "

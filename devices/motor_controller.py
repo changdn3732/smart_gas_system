@@ -498,14 +498,16 @@ class MotorController:
             drv.set_pulse_scale(MotorAxis.X, 1, 1)
             drv.set_pulse_scale(MotorAxis.Y, 1, 1)
             for axis in (MotorAxis.X, MotorAxis.Y):
+                regs = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
+                self.log(f"Driver {drv.slave_id} {axis.value}-axis factory speeds:")
+                for i in range(4):
+                    val = drv._read_register(regs[f'drive_speed{i+1}'])
+                    self.log(f"  speed{i+1} = {val}")
                 for i, spd in enumerate(manual_speeds[:4]):
-                    ok = drv.set_speed(axis, spd, i + 1)
-                    readback = drv._read_register(
-                        (X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS)
-                        [f'drive_speed{i+1}'])
-                    drv.log(f"preset {axis.value}-speed{i+1}={spd} "
-                            f"write={'OK' if ok else 'FAIL'} readback={readback}")
-        self.log("드라이버 초기화 완료 (scale=1/1, 3 speed presets)")
+                    drv.set_speed(axis, spd, i + 1)
+                    readback = drv._read_register(regs[f'drive_speed{i+1}'])
+                    self.log(f"  write speed{i+1}={spd} → readback={readback}")
+        self.log("드라이버 초기화 완료")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
