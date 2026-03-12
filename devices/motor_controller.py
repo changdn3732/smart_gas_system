@@ -288,17 +288,23 @@ class PMC2HSPDriver:
         return self.stop(MotorAxis.X, immediate) and self.stop(MotorAxis.Y, immediate)
 
     def move_with_speed(self, axis: MotorAxis, direction: MotorDirection, speed: int) -> bool:
-        if not self.set_speed(axis, speed, 1):
+        self.log(f"move_with_speed: axis={axis.value} dir={direction.value} speed={speed}PPS")
+        ok1 = self.set_speed(axis, speed, 1)
+        self.log(f"  set_speed → {'OK' if ok1 else 'FAIL'}")
+        if not ok1:
             return False
         time.sleep(0.05)
-        if not self.select_speed(axis, 1):
+        ok2 = self.select_speed(axis, 1)
+        self.log(f"  select_speed → {'OK' if ok2 else 'FAIL'}")
+        if not ok2:
             return False
         time.sleep(0.05)
-        ok = self.start_continuous(axis, direction)
-        if ok:
+        ok3 = self.start_continuous(axis, direction)
+        self.log(f"  start_continuous → {'OK' if ok3 else 'FAIL'}")
+        if ok3:
             status = self.x_status if axis == MotorAxis.X else self.y_status
             status.speed = speed
-        return ok
+        return ok3
 
     # ── P1 전용 프로토콜 (STX/ETX 프레임) ──
 
@@ -479,9 +485,9 @@ class MotorController:
 
     def _initialize_drivers(self):
         for drv in (self.driver1, self.driver2):
-            drv.set_pulse_scale(MotorAxis.X, 1, 200)
-            drv.set_pulse_scale(MotorAxis.Y, 1, 200)
-        self.log("드라이버 초기화 완료")
+            drv.set_pulse_scale(MotorAxis.X, 1, PULSE_PER_MM)
+            drv.set_pulse_scale(MotorAxis.Y, 1, PULSE_PER_MM)
+        self.log(f"드라이버 초기화 완료 (scale=1/{PULSE_PER_MM})")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""

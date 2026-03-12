@@ -970,8 +970,11 @@ class MotorApp:
             speed = self.manual_speeds[self.speed_mode_idx]["pps"]
             motor_id = MOTOR_IDS[motor_idx]
             mapped_dir = DIRECTION_MAP.get(direction, 'plus')
+            print(f"[Manual] motor={motor_id} dir={mapped_dir} speed={speed}PPS "
+                  f"({self.manual_speeds[self.speed_mode_idx]['label']})")
             try:
-                self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
+                ok = self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
+                print(f"[Manual] start_motor → {'OK' if ok else 'FAIL'}")
             except Exception as ex:
                 print(f"Manual start error: {ex}")
 
