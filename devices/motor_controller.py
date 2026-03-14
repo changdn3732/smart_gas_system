@@ -3,7 +3,8 @@
 - 드라이버 2개, 모터 4개 (각 드라이버당 X/Y 2축)
 - Modbus RTU: 연속운전, 속도/가감속 설정
 - P1 전용 프로토콜: 절대/상대 좌표 이동, 직선 보간
-- 스텝각: 0.36°, 1회전 1000펄스, 리드 5mm
+- 선형축(5상): 분해능 100 내장, 0.72°/pulse, 5mm 리드, 500pps=5mm → 100 pulse/mm
+- 회전축(2상): 1.8°/pulse, 200pulse/rev, 마이크로스텝5, 기어비90 (분해능 내장)
 """
 try:
     from pymodbus.client import ModbusSerialClient
@@ -38,17 +39,28 @@ def _detect_slave_kw(client) -> str:
 
 _SLAVE_KW = 'device_id'
 
+# 9600 baud 환경 권장 명령 간격
+CMD_GAP_SEC = 0.05
+
 
 # ==================== 상수 정의 ====================
 
-STEP_ANGLE = 0.72
+# 선형축(5상 스테이지): 500pps=5mm, 분해능 기기 내장
 PULSE_PER_REV = 500
 MM_PER_REV = 5
 PULSE_PER_MM = 100
 
-CMD_REGISTER = 0x0000
+# 회전축(2상): 1.8°/pulse, 200pulse/rev, 마이크로스텝5·기어비90 기기 내장
+ROTATE_DEG_PER_PULSE = 1.8
+
+# Backward-compat alias: 회전 관련 기존 코드에서 참조
+STEP_ANGLE = ROTATE_DEG_PER_PULSE
+
+CMD_REGISTER = 0x0000   # 40001: P0 명령 전용
+P1_REGISTER = 0x0001   # 40002: P1 명령 (0001~0009 = P1 명령표)
 
 # P1 명령 코드
+P1_SPEED_SET = 0x61       # 속도 설정 (6byte DATA)
 P1_ABSOLUTE_MOVE = 0x71   # 절대좌표 이동
 P1_RELATIVE_MOVE = 0x72   # 상대좌표 이동
 P1_INTERPOLATION = 0x73   # 직선 보간
@@ -58,39 +70,45 @@ P1_AXIS_X    = 0x01
 P1_AXIS_Y    = 0x02
 P1_AXIS_XY   = 0x03
 
+# 파라미터 18 설정그룹: Bit 8 = 위치 카운터 클리어
+# X축 41053(0x041C), Y축 41058(0x0421)
+PARAM18_X = 0x041C
+PARAM18_Y = 0x0421
+POS_COUNTER_CLEAR_BIT = 8  # Bit 8: 1=Enable → 현재 위치를 0으로
+
 X_REGISTERS = {
-    'speed_ratio': 0x0454 - 0x0001,
-    'accel': 0x0455 - 0x0001,
-    'decel': 0x0456 - 0x0001,
-    'start_speed': 0x0457 - 0x0001,
-    'drive_speed1': 0x0458 - 0x0001,
-    'drive_speed2': 0x0459 - 0x0001,
-    'drive_speed3': 0x045A - 0x0001,
-    'drive_speed4': 0x045B - 0x0001,
-    'end_pulse_width': 0x045D - 0x0001,
-    'scale_num': 0x045E - 0x0001,
-    'scale_den': 0x045F - 0x0001,
-    'jerk': 0x0472 - 0x0001,
+    # Base address 0 기준 (사용자 제공표 반영)
+    'speed_ratio': 0x044E,
+    'accel': 0x044F,
+    'decel': 0x0450,
+    'start_speed': 0x0451,
+    'drive_speed1': 0x0452,
+    'drive_speed2': 0x0453,
+    'drive_speed3': 0x0454,
+    'drive_speed4': 0x0455,
+    'end_pulse_width': 0x045D,
+    'scale_num': 0x045E,
+    'scale_den': 0x045F,
+    'jerk': 0x0472,
 }
 
 Y_REGISTERS = {
-    'speed_ratio': 0x0460 - 0x0001,
-    'accel': 0x0461 - 0x0001,
-    'decel': 0x0462 - 0x0001,
-    'start_speed': 0x0463 - 0x0001,
-    'drive_speed1': 0x0464 - 0x0001,
-    'drive_speed2': 0x0465 - 0x0001,
-    'drive_speed3': 0x0466 - 0x0001,
-    'drive_speed4': 0x0467 - 0x0001,
-    'post_timer1': 0x0468 - 0x0001,
-    'post_timer2': 0x0469 - 0x0001,
-    'post_timer3': 0x046A - 0x0001,
-    'end_pulse_width': 0x046F - 0x0001,
-    'scale_num': 0x0470 - 0x0001,
-    'scale_den': 0x0471 - 0x0001,
-    'jerk': 0x0473 - 0x0001,
+    'speed_ratio': 0x0460,
+    'accel': 0x0461,
+    'decel': 0x0462,
+    'start_speed': 0x0463,
+    'drive_speed1': 0x0464,
+    'drive_speed2': 0x0465,
+    'drive_speed3': 0x0466,
+    'drive_speed4': 0x0467,
+    'post_timer1': 0x0468,
+    'post_timer2': 0x0469,
+    'post_timer3': 0x046A,
+    'end_pulse_width': 0x046F,
+    'scale_num': 0x0470,
+    'scale_den': 0x0471,
+    'jerk': 0x0473,
 }
-
 
 class MotorCommand:
     X_PLUS_CONTINUOUS = (0x01, 0x20)
@@ -111,6 +129,12 @@ class MotorCommand:
     Y_SPEED_2 = (0x04, 0x02)
     Y_SPEED_3 = (0x04, 0x03)
     Y_SPEED_4 = (0x04, 0x04)
+
+    # 원점복귀 (P0 06H, 40001/0x0000) Broadcast 가능
+    # Lo: 01H=X축, 02H=Y축, 03H=X|Y 동시
+    HOME_RETURN_X = (0x06, 0x01)
+    HOME_RETURN_Y = (0x06, 0x02)
+    HOME_RETURN_XY = (0x06, 0x03)   # X+Y 동시
 
 
 class MotorAxis(Enum):
@@ -200,6 +224,14 @@ class PMC2HSPDriver:
         if not self.connected or not self.client:
             return False
         try:
+            # Register write values are always integer (uint16).
+            # Coerce any float/string input to int and clamp to 0..65535.
+            try:
+                value = int(float(value))
+            except Exception:
+                value = 0
+            value = max(0, min(65535, value))
+
             # Prefer FC06 (single register write), and fallback to FC16 for devices
             # that only accept multiple-register write framing.
             result = self.client.write_register(
@@ -296,20 +328,52 @@ class PMC2HSPDriver:
         return self._send_command(*cmd)
 
     def stop_all(self, immediate: bool = False) -> bool:
-        return self.stop(MotorAxis.X, immediate) and self.stop(MotorAxis.Y, immediate)
+        ok_x = self.stop(MotorAxis.X, immediate)
+        ok_y = self.stop(MotorAxis.Y, immediate)
+        return ok_x and ok_y
 
-    def write_speed_ratio(self, axis: MotorAxis, speed: int) -> bool:
-        """PDF 41107(X) / 41113(Y) speed_ratio 레지스터에 속도값 쓰기"""
+    def write_drive_speed1(self, axis: MotorAxis, speed: int) -> bool:
+        """Drive Speed 1 레지스터(X:0x0458-1, Y:0x0464-1)에 속도값 쓰기"""
         regs = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
-        addr = regs['speed_ratio']
+        addr = regs['drive_speed1']
         ok = self._write_register(addr, speed)
-        self.log(f"write_speed_ratio: axis={axis.value} speed={speed} "
+        self.log(f"write_drive_speed1: axis={axis.value} speed={speed} "
                  f"addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
+        return ok
+
+    def clear_position_counter(self, axis: MotorAxis) -> bool:
+        """현재 위치를 0으로 설정 (41053/0x041C Bit 8 = 1)"""
+        addr = PARAM18_X if axis == MotorAxis.X else PARAM18_Y
+        cur = self._read_register(addr)
+        if cur is None:
+            cur = 0
+        val = cur | (1 << POS_COUNTER_CLEAR_BIT)
+        ok = self._write_register(addr, val)
+        self.log(f"clear_position_counter: axis={axis.value} addr=0x{addr:04X} "
+                 f"cur=0x{cur:04X} val=0x{val:04X} → {'OK' if ok else 'FAIL'}")
+        return ok
+
+    def home_return(self, axis: MotorAxis) -> bool:
+        """원점복귀 실행 (P0 06H, 40001/0x0000) - 단일 축"""
+        cmd = MotorCommand.HOME_RETURN_X if axis == MotorAxis.X else MotorCommand.HOME_RETURN_Y
+        ok = self._send_command(*cmd)
+        self.log(f"home_return: axis={axis.value} → {'OK' if ok else 'FAIL'}")
+        return ok
+
+    def home_return_xy(self) -> bool:
+        """원점복귀 실행 (P0 06H) - X,Y축 동시 (Lo=03H)"""
+        ok = self._send_command(*MotorCommand.HOME_RETURN_XY)
+        self.log(f"home_return_xy: X|Y → {'OK' if ok else 'FAIL'}")
         return ok
 
     def move_with_speed(self, axis: MotorAxis, direction: MotorDirection,
                         speed: int) -> bool:
         self.log(f"move_with_speed: axis={axis.value} dir={direction.value} speed={speed}PPS")
+        ok_sel = self.select_speed(axis, 1)
+        self.log(f"  select_speed(1) → {'OK' if ok_sel else 'FAIL'}")
+        if not ok_sel:
+            return False
+        time.sleep(CMD_GAP_SEC)
         ok = self.start_continuous(axis, direction)
         self.log(f"  start_continuous → {'OK' if ok else 'FAIL'}")
         if ok:
@@ -320,9 +384,13 @@ class PMC2HSPDriver:
     # ── P1 전용 프로토콜 (STX/ETX 프레임) ──
 
     def _get_raw_serial(self):
-        """pymodbus 클라이언트의 하위 serial.Serial 객체 반환"""
-        if self.client and hasattr(self.client, 'socket') and self.client.socket:
-            return self.client.socket
+        """pymodbus 클라이언트의 하위 serial.Serial 객체 반환 (pymodbus 버전 호환)"""
+        if not self.client:
+            return None
+        for attr in ('socket', 'serial', '_socket', '_serial', 'transport'):
+            obj = getattr(self.client, attr, None)
+            if obj is not None and hasattr(obj, 'write'):
+                return obj
         return None
 
     @staticmethod
@@ -369,6 +437,17 @@ class PMC2HSPDriver:
             self.log(f"P1 통신 오류: {e}")
             return False
 
+    def set_speed_p1(self, axis: int, x_speed: int = 1000, y_speed: int = 1000) -> bool:
+        """61H: P1 속도 설정 (1~8000)"""
+        x_speed = max(1, min(8000, x_speed))
+        y_speed = max(1, min(8000, y_speed))
+        data = bytes([P1_SPEED_SET, axis]) \
+               + x_speed.to_bytes(2, 'big') \
+               + y_speed.to_bytes(2, 'big')
+        ok = self._send_p1(data)
+        self.log(f"set_speed_p1: axis=0x{axis:02X} x={x_speed} y={y_speed} → {'OK' if ok else 'FAIL'}")
+        return ok
+
     def move_absolute_p1(self, x_pulse: int = 0, y_pulse: int = 0,
                          axis: int = P1_AXIS_XY) -> bool:
         """71H: 절대좌표 이동"""
@@ -398,27 +477,29 @@ def pulse_to_mm(pulse: int) -> float:
     return pulse / PULSE_PER_MM
 
 def degree_to_pulse(degree: float) -> int:
-    return int(degree / STEP_ANGLE)
+    return int(degree / ROTATE_DEG_PER_PULSE)
 
 def pulse_to_degree(pulse: int) -> float:
-    return pulse * STEP_ANGLE
+    return pulse * ROTATE_DEG_PER_PULSE
 
 def speed_pps_to_mm_per_sec(pps: int) -> float:
     return pps / PULSE_PER_MM
 
 def speed_pps_to_deg_per_sec(pps: int) -> float:
-    return pps * STEP_ANGLE
+    return pps * ROTATE_DEG_PER_PULSE
 
 
 class MotorController:
     MOTOR_MAP = {
-        'upper_stage':  {'driver': 1, 'axis': MotorAxis.X, 'name': '상부 스테이지', 'type': 'linear'},
-        'upper_rotate': {'driver': 1, 'axis': MotorAxis.Y, 'name': '상부 회전',     'type': 'rotate'},
-        'lower_stage':  {'driver': 2, 'axis': MotorAxis.X, 'name': '하부 스테이지', 'type': 'linear'},
-        'lower_rotate': {'driver': 2, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
+        # linear 스테이지 X,Y 교환: upper=X, lower=Y
+        # slave1 X -> upper_rotate, slave1 Y -> lower_rotate
+        'upper_stage':  {'driver': 2, 'axis': MotorAxis.X, 'name': '상부 스테이지', 'type': 'linear'},
+        'lower_stage':  {'driver': 2, 'axis': MotorAxis.Y, 'name': '하부 스테이지', 'type': 'linear'},
+        'upper_rotate': {'driver': 1, 'axis': MotorAxis.X, 'name': '상부 회전',     'type': 'rotate'},
+        'lower_rotate': {'driver': 1, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
     }
 
-    def __init__(self, port: str = '/dev/ttyS1', baudrate: int = 9600,
+    def __init__(self, port: str = 'COM7', baudrate: int = 9600,
                  parity: str = 'N', rs485_mode: bool = False):
         self.port = port
         self.baudrate = baudrate
@@ -455,7 +536,7 @@ class MotorController:
                         raw_ser.rs485_mode = serial.rs485.RS485Settings(
                             rts_level_for_tx=True,
                             rts_level_for_rx=False,
-                            delay_before_tx=0.0,
+                            delay_before_tx=None,
                             delay_before_rx=0.005,
                         )
                         self.log("RS-485 mode enabled")
@@ -495,10 +576,9 @@ class MotorController:
         self.connected = False
 
     def _initialize_drivers(self):
-        for drv in (self.driver1, self.driver2):
-            drv.set_pulse_scale(MotorAxis.X, 1, 1)
-            drv.set_pulse_scale(MotorAxis.Y, 1, 1)
-        self.log("드라이버 초기화 완료 (scale=1/1, PULSE_PER_MM=100)")
+        # 분해능/스케일은 드라이버 물리 설정을 그대로 사용한다.
+        # 소프트웨어에서 scale_num/scale_den을 쓰지 않는다.
+        self.log("드라이버 초기화 완료 (driver physical resolution in use)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
@@ -529,14 +609,26 @@ class MotorController:
         return drv, cfg['axis']
 
     def set_speed_all(self, speed: int) -> bool:
-        """모든 드라이버의 X/Y 축 speed_ratio 레지스터에 속도 쓰기 (PDF 41107)"""
+        """Drive Speed 1만 사용: 각 드라이버 X/Y축 drive_speed1에 속도 쓰기"""
         if not self.connected:
             return False
         ok = True
         for drv in (self.driver1, self.driver2):
-            for axis in (MotorAxis.X, MotorAxis.Y):
-                if not drv.write_speed_ratio(axis, speed):
-                    ok = False
+            if not drv.write_drive_speed1(MotorAxis.X, speed):
+                ok = False
+            time.sleep(CMD_GAP_SEC)
+            if not drv.write_drive_speed1(MotorAxis.Y, speed):
+                ok = False
+            time.sleep(CMD_GAP_SEC)
+        return ok
+
+    def set_speed_for_motor(self, motor_id: str, speed: int) -> bool:
+        """특정 모터의 축 drive_speed1에 속도 쓰기"""
+        if not self.connected:
+            return False
+        drv, axis = self._get_driver_axis(motor_id)
+        ok = drv.write_drive_speed1(axis, speed)
+        time.sleep(CMD_GAP_SEC)
         return ok
 
     def start_motor(self, motor_id: str, direction: str, speed: int = 1000) -> bool:
@@ -571,6 +663,39 @@ class MotorController:
         for k in self.motor_speeds:
             self.motor_speeds[k] = 0
         return True
+
+    def clear_position_counter_all(self) -> bool:
+        """4축 모두 현재 위치를 0으로 설정 (Set Home)"""
+        if not self.connected:
+            return False
+        ok = True
+        for drv in (self.driver1, self.driver2):
+            ok = drv.clear_position_counter(MotorAxis.X) and ok
+            time.sleep(CMD_GAP_SEC)
+            ok = drv.clear_position_counter(MotorAxis.Y) and ok
+            time.sleep(CMD_GAP_SEC)
+        return ok
+
+    def home_return_all(self) -> bool:
+        """브로드캐스트 시도 → 실패 시 슬레이브별 전송 (broadcast는 응답 없음으로 타임아웃 가능)"""
+        if not self.connected or not self.client:
+            return False
+        value = (MotorCommand.HOME_RETURN_XY[0] << 8) | MotorCommand.HOME_RETURN_XY[1]
+        try:
+            result = self.client.write_register(
+                address=CMD_REGISTER, value=value, **{_SLAVE_KW: 0}
+            )
+            if not result.isError():
+                self.log(f"home_return broadcast (0x{value:04X}) → OK")
+                return True
+        except Exception as e:
+            self.log(f"home_return broadcast: {e} (fallback to per-slave)")
+        # Fallback: broadcast 응답 없음/타임아웃 시 슬레이브별 X|Y 동시 전송
+        ok = True
+        for drv in (self.driver1, self.driver2):
+            ok = drv.home_return_xy() and ok
+            time.sleep(CMD_GAP_SEC)
+        return ok
 
     def move_absolute(self, motor_id: str, target_pulse: int,
                       speed: int = 1000) -> bool:
@@ -610,21 +735,80 @@ class MotorController:
 
     def move_relative(self, motor_id: str, delta_pulse: int,
                       speed: int = 1000) -> bool:
-        """P1 상대좌표 이동 (단일 축)"""
-        if not self.connected:
+        """P1 상대좌표 이동 (단일 축) - Modbus 40002(0x0001) P1 블록에 72H 전송"""
+        return self.move_relative_modbus_p1(motor_id, delta_pulse, speed)
+
+    def _write_p1_speed_modbus(self, drv, speed: int) -> bool:
+        """P1 61H: Modbus로 X/Y축 속도 설정 (1~8000)"""
+        clamped = min(max(1, speed), 8000)
+        ax = P1_AXIS_XY  # X,Y 둘 다 동일 속도로 설정
+        regs = [(P1_SPEED_SET << 8) | ax, clamped, clamped]  # 3 registers
+        try:
+            r = self.client.write_registers(
+                address=P1_REGISTER, values=regs, **{_SLAVE_KW: drv.slave_id}
+            )
+            ok = not r.isError()
+            if ok:
+                self.log(f"P1 61H speed={clamped} (X,Y) → OK")
+            return ok
+        except Exception as e:
+            self.log(f"P1 61H speed set error: {e}")
+            return False
+
+    def move_relative_modbus_p1(self, motor_id: str, delta_pulse: int,
+                               speed: int = 1000) -> bool:
+        """P1 72H 상대이동을 Modbus 40002(0x0001) P1 블록에 FC16으로 전송"""
+        if not self.connected or not self.client:
             return False
         drv, axis = self._get_driver_axis(motor_id)
         clamped = min(max(1, speed), 8000)
-        drv.set_speed(axis, clamped, 1)
-        time.sleep(0.03)
+        # P0 drive_speed1 + select_speed (연속운전과 동일, P1도 이 속도 사용 가능)
+        drv.write_drive_speed1(axis, clamped)
+        time.sleep(CMD_GAP_SEC)
         drv.select_speed(axis, 1)
-        time.sleep(0.03)
-        if axis == MotorAxis.X:
-            return drv.move_relative_p1(x_delta=delta_pulse, y_delta=0,
-                                        axis=P1_AXIS_X)
-        else:
-            return drv.move_relative_p1(x_delta=0, y_delta=delta_pulse,
-                                        axis=P1_AXIS_Y)
+        time.sleep(CMD_GAP_SEC)
+        # P1 61H 속도 설정
+        self._write_p1_speed_modbus(drv, clamped)
+        time.sleep(0.15)
+
+        x_delta = delta_pulse if axis == MotorAxis.X else 0
+        y_delta = delta_pulse if axis == MotorAxis.Y else 0
+        ax = P1_AXIS_X if axis == MotorAxis.X else P1_AXIS_Y
+
+        def signed_to_regs(v: int) -> tuple:
+            v32 = v & 0xFFFFFFFF
+            return (v32 >> 16) & 0xFFFF, v32 & 0xFFFF
+
+        x_hi, x_lo = signed_to_regs(x_delta)
+        y_hi, y_lo = signed_to_regs(y_delta)
+        # 40002(0x0001): 상위=명령(72H), 하위=축(01/02/03), X/Y 32bit (Hi,Lo)
+        regs = [(P1_RELATIVE_MOVE << 8) | ax, x_hi, x_lo, y_hi, y_lo]
+        try:
+            result = self.client.write_registers(
+                address=P1_REGISTER, values=regs, **{_SLAVE_KW: drv.slave_id}
+            )
+            ok = not result.isError()
+            self.log(f"move_relative_modbus_p1 {motor_id} axis=0x{ax:02X} delta={delta_pulse} "
+                     f"Reg40002={regs[0]:04X} → {'OK' if ok else 'FAIL'}")
+            if not ok:
+                exc = getattr(result, 'exception_code', None)
+                self.log(f"  FC16 response: {result} exception_code={exc}")
+            if ok:
+                return True
+            # FC16 실패 시 FC06 x5로 개별 레지스터 쓰기 시도
+            self.log(f"move_relative_modbus_p1 {motor_id} FC06 x5 fallback")
+            for i, val in enumerate(regs):
+                r = self.client.write_register(
+                    address=P1_REGISTER + i, value=val, **{_SLAVE_KW: drv.slave_id}
+                )
+                if r.isError():
+                    self.log(f"move_relative_modbus_p1 FC06 reg[{i}] FAIL: {r}")
+                    return False
+                time.sleep(CMD_GAP_SEC)
+            return True
+        except Exception as e:
+            self.log(f"move_relative_modbus_p1 {motor_id} error: {e}")
+            return False
 
     def move_relative_xy(self, driver_id: int,
                          x_delta: int, y_delta: int,
@@ -649,3 +833,23 @@ class MotorController:
 
     def get_motor_name(self, motor_id: str) -> str:
         return self.MOTOR_MAP[motor_id]['name']
+
+    def get_operating_mode(self, driver_id: int = 1) -> Optional[str]:
+        """Func 02: MODE0(10020), MODE1(10021) 읽어 동작 모드 반환 (Jog/Continuous/Index/Program)"""
+        if not self.connected or not self.client:
+            return None
+        drv = self.driver1 if driver_id == 1 else self.driver2
+        try:
+            # 주소 0x0013=19 (MODE0), 0x0014=20 (MODE1) - 매뉴얼 10020,10021
+            r = self.client.read_discrete_inputs(
+                address=0x0013, count=2, **{_SLAVE_KW: drv.slave_id}
+            )
+            if r.isError():
+                return None
+            m0 = r.bits[0] if r.bits else False
+            m1 = r.bits[1] if len(r.bits) > 1 else False
+            mode = (1 if m1 else 0) << 1 | (1 if m0 else 0)
+            return {0: "Jog", 1: "Continuous", 2: "Index", 3: "Program"}.get(mode, f"Unknown({mode})")
+        except Exception as e:
+            self.log(f"get_operating_mode error: {e}")
+            return None

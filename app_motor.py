@@ -4,18 +4,19 @@ Smart Motor Control - PMC-2HSP 모터 제어 앱
 """
 import flet as ft
 import asyncio
-import math
 import base64
 import io
 import json
 import sys
 import os
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from devices.motor_controller import (
     MotorController, PULSE_PER_MM, STEP_ANGLE,
     speed_pps_to_mm_per_sec, speed_pps_to_deg_per_sec,
+    mm_to_pulse, degree_to_pulse,
 )
 
 try:
@@ -40,45 +41,61 @@ DIRECTION_OPTIONS = {
 }
 DIRECTION_MAP = {'+': 'plus', '-': 'minus', 'CW': 'cw', 'CCW': 'ccw'}
 
+# 스테이지 물리 제한: 모터간 43.5cm, 각 모터 0~45cm 이동 가능 (초기=하단)
+STAGE_GAP_MM = 435.0
+MAX_TRAVEL_MM = 450.0
+
 
 class MotorApp:
 
     def __init__(self):
         self.motor_ctrl: MotorController | None = None
         self.selected_motor = 0
+        self._conn_status_value = "Disconnected"
+        self._conn_status_color = "red"
 
         self.steps = [
             [{'speed': None, 'dur': None, 'dir_dd': None, 'dist_text': None} for _ in range(8)]
             for _ in range(4)
         ]
         self.step_enabled = [
-            [True, True, True, True, False, False, False, False]
+            # Safer default: only S1 enabled, S2+ are opt-in.
+            [True, False, False, False, False, False, False, False]
             for _ in range(4)
         ]
 
         self.schedule_running = False
         self.schedule_time = 0.0
         self.history = [[] for _ in range(4)]
+        self._schedule_cmd_dt = 0.1          # command update period (s)
+        self._graph_render_interval = 1.0    # graph render period (s)
+        self._position_dt = 0.1              # position integration period (s)
+        self._last_schedule_cmd = [{"spd": None, "dir": None} for _ in range(4)]
+        self._schedule_relative_mode = True  # 스케줄 상대위치 방식
 
         # 절대좌표 추적
         self._config_path = os.path.join(os.path.dirname(__file__), 'motor_home.json')
-        self.stage_gap = 100.0
+        self.stage_gap = STAGE_GAP_MM
         self.cur_z = {'upper': 0.0, 'lower': 0.0}
         self.cur_angle = {'upper': 0.0, 'lower': 0.0}
         self.home_z = {'upper': 0.0, 'lower': 0.0}
         self.home_angle = {'upper': 0.0, 'lower': 0.0}
         self._homing = False
         self._graph_loop_running = False
+        self._limit_alarm_triggered = False
+        self._limit_alarm_dialog = None
         self._load_home()
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
         self.manual_speeds = [
-            {"label": "0.05 mm/s", "pps": 5},
-            {"label": "0.5 mm/s", "pps": 50},
-            {"label": "3 mm/s", "pps": 300},
+            {"label": "very slow", "pps": 5},
+            {"label": "slow", "pps": 50},
+            {"label": "fast", "pps": 300},
         ]
         self.speed_mode_idx = 0
+        self._last_applied_manual_speed_pps = None
         self.motor_running = [False, False, False, False]
+        self._manual_pressed_at = [0.0, 0.0, 0.0, 0.0]
         self.motor_manual_dir = ['+', 'CW', '+', 'CW']
         self._motor_labels = [None, None, None, None]
         self._motor_rows = [None, None, None, None]
@@ -94,12 +111,68 @@ class MotorApp:
                 data = json.load(f)
             self.home_z = data.get('home_z', {'upper': 0.0, 'lower': 0.0})
             self.home_angle = data.get('home_angle', {'upper': 0.0, 'lower': 0.0})
-            self.stage_gap = data.get('stage_gap', 100.0)
-            
+            self.stage_gap = data.get('stage_gap', STAGE_GAP_MM)
+
             self.cur_z = dict(self.home_z)
             self.cur_angle = dict(self.home_angle)
+            for k in ('upper', 'lower'):
+                self.home_z[k] = max(0, min(MAX_TRAVEL_MM, self.home_z.get(k, 0)))
+                self.cur_z[k] = self.home_z[k]
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             pass
+
+    def _check_stage_limits(self) -> tuple[bool, str]:
+        """스테이지 위치가 0~MAX_TRAVEL_MM 범위 내인지 확인. (ok, msg) 반환."""
+        for key, label in [('upper', '상부'), ('lower', '하부')]:
+            z = self.cur_z[key]
+            if z < 0:
+                return False, f"{label} 스테이지 하한 초과 ({z:.1f}mm < 0mm)"
+            if z > MAX_TRAVEL_MM:
+                return False, f"{label} 스테이지 상한 초과 ({z:.1f}mm > {MAX_TRAVEL_MM:.0f}mm)"
+        return True, ""
+
+    def _trigger_limit_alarm(self, msg: str):
+        """범위 초과 시 모든 모터 정지 + 알람 다이얼로그"""
+        if self._limit_alarm_triggered:
+            return
+        self._limit_alarm_triggered = True
+        self.schedule_running = False
+        self._homing = False
+        for i in range(4):
+            self.motor_running[i] = False
+            self._highlight_motor(i, False)
+        if self.motor_ctrl and self.motor_ctrl.connected:
+            self.motor_ctrl.stop_all(immediate=False)
+        for k in ('upper', 'lower'):
+            self.cur_z[k] = max(0, min(MAX_TRAVEL_MM, self.cur_z[k]))
+        if hasattr(self, '_status_text') and self._status_text:
+            self._status_text.value = f"⚠ 한계 초과: {msg}"
+            self._status_text.color = "#ff0000"
+        if hasattr(self, 'start_btn') and self.start_btn:
+            self.start_btn.text = "Start"
+        self._update_all_graphs()
+        if hasattr(self, 'page') and self.page:
+            self._limit_alarm_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("스테이지 한계 초과", color="#ff0000", weight=ft.FontWeight.BOLD),
+                content=ft.Text(f"{msg}\n\n모든 모터가 정지되었습니다.", size=14),
+                on_dismiss=lambda e: setattr(self, '_limit_alarm_triggered', False),
+            )
+            self.page.overlay.append(self._limit_alarm_dialog)
+            self._limit_alarm_dialog.open = True
+            self.page.update()
+
+    def _would_exceed_limit(self, motor_idx: int, direction: str) -> bool:
+        """해당 방향 이동 시 한계 초과 여부 (수동 조작 전 체크용)"""
+        if MOTOR_TYPES[motor_idx] != 'linear':
+            return False
+        key = 'upper' if motor_idx == 0 else 'lower'
+        z = self.cur_z[key]
+        if direction in ('+', 'plus', 'up'):
+            return z >= MAX_TRAVEL_MM
+        if direction in ('-', 'minus', 'down'):
+            return z <= 0
+        return False
 
     def _save_home(self):
         data = {
@@ -120,6 +193,7 @@ class MotorApp:
 
     @staticmethod
     def _parse_duration_to_hours(text: str) -> float:
+        """HH:MM:SS 또는 초 단위 숫자 → 시간(hours)"""
         text = (text or "0").strip()
         if ":" in text:
             parts = text.split(":")
@@ -131,7 +205,9 @@ class MotorApp:
             except ValueError:
                 return 0.0
         try:
-            return float(text)
+            # "5" 등 숫자만 입력 시 → 초 단위로 해석 (5 = 5초)
+            sec = float(text)
+            return sec / 3600.0
         except ValueError:
             return 0.0
 
@@ -471,16 +547,19 @@ class MotorApp:
             width=200, value="/dev/ttyS1", text_size=13, dense=True,
             options=self._scan_ports(),
         )
-        self._baud_input = self._make_table_input("9600", w=100, h=34)
+        self._baud_dropdown = ft.Dropdown(
+            width=120, value="9600", text_size=13, dense=True,
+            options=[ft.DropdownOption("9600"), ft.DropdownOption("19200")],
+        )
 
-        self._conn_status = ft.Text("Disconnected", color="red", size=13)
+        self._conn_status = ft.Text(self._conn_status_value, color=self._conn_status_color, size=13)
 
         self._gap_input = self._make_table_input(str(self.stage_gap), w=100, h=34)
         gap_apply_btn = ft.ElevatedButton("Apply", bgcolor="#2196F3", color="white",
                                           on_click=lambda e: self._apply_gap())
 
         self._parity_label = ft.Text("Parity: N (fixed)", size=13, color="#888888")
-        self._rs485_checkbox = ft.Checkbox(label="RS-485 mode", value=False)
+        self._rs485_label = ft.Text("RS-485: fixed", size=13, color="#888888")
 
         refresh_btn = ft.ElevatedButton("Refresh Ports", on_click=lambda e: self._refresh_ports())
         connect_btn = ft.ElevatedButton("Connect", bgcolor="#4CAF50", color="white",
@@ -489,6 +568,8 @@ class MotorApp:
                                            on_click=lambda e: self._disconnect_motor())
         diagnose_btn = ft.ElevatedButton("Diagnose", bgcolor="#FF9800", color="white",
                                          on_click=lambda e: self._diagnose_serial())
+        mode_btn = ft.ElevatedButton("Check Mode", bgcolor="#9C27B0", color="white",
+                                     on_click=lambda e: self._check_operating_mode())
         stop_all_btn = ft.ElevatedButton("STOP ALL", bgcolor="#ff0000", color="white",
                                          on_click=lambda e: self._confirm_emergency_stop())
 
@@ -499,9 +580,9 @@ class MotorApp:
                 ft.Text("Motor Settings", size=16, weight=ft.FontWeight.BOLD),
                 ft.Divider(),
                 ft.Row([ft.Text("Port:", width=80), self._port_dropdown, refresh_btn]),
-                ft.Row([ft.Text("Baud:", width=80), self._baud_input,
-                        self._parity_label, self._rs485_checkbox]),
-                ft.Row([connect_btn, disconnect_btn, diagnose_btn]),
+                ft.Row([ft.Text("Baud:", width=80), self._baud_dropdown,
+                        self._parity_label, self._rs485_label]),
+                ft.Row([connect_btn, disconnect_btn, diagnose_btn, mode_btn]),
                 self._conn_status,
                 ft.Divider(),
                 ft.Text("Stage Configuration", size=14, weight=ft.FontWeight.BOLD),
@@ -517,16 +598,21 @@ class MotorApp:
         try:
             self.stage_gap = float(self._gap_input.value)
         except (ValueError, TypeError):
-            self.stage_gap = 100.0
+            self.stage_gap = STAGE_GAP_MM
         self._save_home()
         self._update_all_graphs()
         self.page.update()
 
     def _scan_ports(self):
+        default_ports = ["COM7", "/dev/ttyS1"]
         if serial:
             ports = serial.tools.list_ports.comports()
-            return [ft.DropdownOption(p.device) for p in ports] or [ft.DropdownOption("/dev/ttyS1")]
-        return [ft.DropdownOption("/dev/ttyS1")]
+            devices = [p.device for p in ports]
+            for dp in default_ports:
+                if dp not in devices:
+                    devices.append(dp)
+            return [ft.DropdownOption(d) for d in devices]
+        return [ft.DropdownOption(p) for p in default_ports]
 
     def _refresh_ports(self):
         self._port_dropdown.options = self._scan_ports()
@@ -535,11 +621,13 @@ class MotorApp:
     def _connect_motor(self):
         port = self._port_dropdown.value or "/dev/ttyS1"
         try:
-            baud = int(self._baud_input.value)
+            baud = int(self._baud_dropdown.value)
         except (ValueError, TypeError):
             baud = 9600
-        rs485 = self._rs485_checkbox.value or False
-        self.motor_ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=rs485)
+        if baud not in (9600, 19200):
+            baud = 9600
+            self._baud_dropdown.value = "9600"
+        self.motor_ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=True)
         ok = self.motor_ctrl.connect()
         if ok:
             verify = self.motor_ctrl.verify_connection()
@@ -548,16 +636,67 @@ class MotorApp:
             if all_ok:
                 init_speed = self.manual_speeds[self.speed_mode_idx]["pps"]
                 self.motor_ctrl.set_speed_all(init_speed)
+                self._last_applied_manual_speed_pps = init_speed
                 print(f"[Init] speed_ratio set to {init_speed} PPS")
-                self._conn_status.value = f"Connected ({port}) [{v_str}]"
-                self._conn_status.color = "#4CAF50"
+                self._set_conn_status(f"Connected ({port} @ {baud}) [{v_str}]", "#4CAF50")
             else:
-                self._conn_status.value = f"Port open but driver error [{v_str}]"
-                self._conn_status.color = "#FF9800"
+                self._set_conn_status(f"Port open but driver error [{v_str}]", "#FF9800")
         else:
-            self._conn_status.value = f"Failed ({port})"
-            self._conn_status.color = "red"
+            self._set_conn_status(f"Failed ({port} @ {baud})", "red")
             self.motor_ctrl = None
+        self.page.update()
+
+    def _check_operating_mode(self):
+        """PMC-2HSP 동작 모드 확인 (Func 02 MODE0/MODE1)"""
+        if not self.motor_ctrl or not self.motor_ctrl.connected:
+            self._diag_text.value = "Connect first"
+            self.page.update()
+            return
+        m1 = self.motor_ctrl.get_operating_mode(1)
+        m2 = self.motor_ctrl.get_operating_mode(2)
+        msg = f"Driver1: {m1 or 'N/A'}  |  Driver2: {m2 or 'N/A'}"
+        if m1 or m2:
+            msg += "\n(Jog=수동, Continuous=연속, Index=인덱스, Program=프로그램)"
+        self._diag_text.value = msg
+        self.page.update()
+
+    def _set_conn_status(self, value: str, color: str):
+        self._conn_status_value = value
+        self._conn_status_color = color
+        if hasattr(self, "_conn_status") and self._conn_status:
+            self._conn_status.value = value
+            self._conn_status.color = color
+
+    async def _auto_connect_on_start(self):
+        await asyncio.sleep(0.2)
+        port = "/dev/ttyS1"
+        try:
+            if hasattr(self, "_port_dropdown") and self._port_dropdown.value:
+                port = self._port_dropdown.value
+        except Exception:
+            pass
+
+        for baud in (9600, 19200):
+            ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=True)
+            if not ctrl.connect():
+                continue
+            verify = ctrl.verify_connection()
+            all_ok = all("OK" in str(v) for v in verify.values())
+            if all_ok:
+                self.motor_ctrl = ctrl
+                self._last_applied_manual_speed_pps = self.manual_speeds[self.speed_mode_idx]["pps"]
+                self.motor_ctrl.set_speed_all(self._last_applied_manual_speed_pps)
+                self._set_conn_status(f"Connected ({port} @ {baud})", "#4CAF50")
+                try:
+                    if hasattr(self, "_baud_dropdown"):
+                        self._baud_dropdown.value = str(baud)
+                except Exception:
+                    pass
+                self.page.update()
+                return
+            ctrl.disconnect()
+
+        self._set_conn_status(f"Failed ({port})", "red")
         self.page.update()
 
     def _diagnose_serial(self):
@@ -568,7 +707,7 @@ class MotorApp:
 
         port = self._port_dropdown.value or "/dev/ttyS1"
         try:
-            baud = int(self._baud_input.value)
+            baud = int(self._baud_dropdown.value)
         except (ValueError, TypeError):
             baud = 9600
 
@@ -710,12 +849,20 @@ class MotorApp:
             self.motor_ctrl.stop_all(immediate=True)
             self.motor_ctrl.disconnect()
             self.motor_ctrl = None
-        self._conn_status.value = "Disconnected"
-        self._conn_status.color = "red"
+        self._set_conn_status("Disconnected", "red")
         self.page.update()
 
     def _set_home(self):
-        """현재 위치를 홈으로 저장 (소프트웨어 위치 기록)"""
+        """현재 위치를 홈(0)으로 설정: 드라이버 위치 카운터 클리어 + 앱 홈 저장"""
+        if self.motor_ctrl and self.motor_ctrl.connected:
+            try:
+                ok = self.motor_ctrl.clear_position_counter_all()
+                if not ok:
+                    print("[SetHome] clear_position_counter_all failed")
+            except Exception as ex:
+                print(f"[SetHome] error: {ex}")
+            if self.motor_ctrl:
+                time.sleep(0.1)
         dist_upper = self.cur_z['upper'] - self.home_z.get('upper', 0.0)
         dist_lower = self.cur_z['lower'] - self.home_z.get('lower', 0.0)
         self.stage_gap = max(0.1, self.stage_gap + dist_upper - dist_lower)
@@ -732,7 +879,7 @@ class MotorApp:
         self.page.update()
 
     def _go_home(self):
-        """홈 위치로 복귀 (P1 상대좌표 이동)"""
+        """홈 위치로 복귀 (P1 상대좌표 이동 - 물리센서 없이 소프트웨어 홈 기준)"""
         if self.schedule_running or self._homing:
             return
         if hasattr(self, '_status_text') and self._status_text:
@@ -742,49 +889,47 @@ class MotorApp:
         self.page.run_task(self._homing_loop)
 
     async def _homing_loop(self):
-        from devices.motor_controller import mm_to_pulse, degree_to_pulse
+        """저장된 홈 기준: 홈-현재 차이(펄스)만큼 연속운전으로 복귀"""
         self._homing = True
-        homing_speed = 1000  # 5 mm/s
-        mm_per_sec = homing_speed / PULSE_PER_MM
-
-        diff_z = {}
-        diff_angle = {}
-        for key in ('upper', 'lower'):
-            diff_z[key] = self.home_z[key] - self.cur_z[key]
-            diff_angle[key] = self.home_angle[key] - self.cur_angle[key]
+        homing_speed = 1000
 
         if self.motor_ctrl and self.motor_ctrl.connected:
-            for drv_id, key in [(1, 'upper'), (2, 'lower')]:
-                x_delta = mm_to_pulse(diff_z[key])
-                y_delta = degree_to_pulse(diff_angle[key])
-                if x_delta == 0 and y_delta == 0:
-                    continue
-                try:
-                    self.motor_ctrl.move_relative_xy(
-                        drv_id, x_delta, y_delta, speed=homing_speed
-                    )
-                except Exception as ex:
-                    print(f"Homing driver {drv_id} error: {ex}")
-                await asyncio.sleep(0.05)
+            self.motor_ctrl.stop_all(immediate=True)
+            await asyncio.sleep(0.3)
 
-        max_dist = max(
-            abs(diff_z['upper']), abs(diff_z['lower']),
-            abs(diff_angle['upper']) / STEP_ANGLE / PULSE_PER_MM,
-            abs(diff_angle['lower']) / STEP_ANGLE / PULSE_PER_MM,
-        )
-        est_time = (max_dist / mm_per_sec + 1.0) if mm_per_sec > 0 else 2.0
+        diff_z = {k: self.home_z[k] - self.cur_z[k] for k in ('upper', 'lower')}
+        diff_angle = {k: self.home_angle[k] - self.cur_angle[k] for k in ('upper', 'lower')}
 
-        start_z = dict(self.cur_z)
-        start_angle = dict(self.cur_angle)
-        tick = 0.1
-        elapsed = 0.0
-        while self._homing and elapsed < est_time:
-            frac = min(1.0, elapsed / max(0.01, est_time - 1.0))
-            for key in ('upper', 'lower'):
-                self.cur_z[key] = start_z[key] + diff_z[key] * frac
-                self.cur_angle[key] = start_angle[key] + diff_angle[key] * frac
-            await asyncio.sleep(tick)
-            elapsed += tick
+        # (motor_id, direction, duration_sec) - _map_motor_direction 적용
+        tasks = []
+        if abs(diff_z['upper']) > 0.01:
+            dir_u = 'minus' if diff_z['upper'] > 0 else 'plus'
+            dur = abs(mm_to_pulse(diff_z['upper'])) / homing_speed
+            tasks.append(('upper_stage', dir_u, min(dur, 60.0)))
+        if abs(diff_z['lower']) > 0.01:
+            dir_l = 'plus' if diff_z['lower'] > 0 else 'minus'
+            dur = abs(mm_to_pulse(diff_z['lower'])) / homing_speed
+            tasks.append(('lower_stage', dir_l, min(dur, 60.0)))
+        if abs(diff_angle['upper']) > 0.01:
+            dir_u = 'cw' if diff_angle['upper'] > 0 else 'ccw'
+            dur = abs(degree_to_pulse(diff_angle['upper'])) / homing_speed
+            tasks.append(('upper_rotate', dir_u, min(dur, 60.0)))
+        if abs(diff_angle['lower']) > 0.01:
+            dir_l = 'cw' if diff_angle['lower'] > 0 else 'ccw'
+            dur = abs(degree_to_pulse(diff_angle['lower'])) / homing_speed
+            tasks.append(('lower_rotate', dir_l, min(dur, 60.0)))
+
+        async def run_one(motor_id, direction, duration):
+            if not self.motor_ctrl or not self.motor_ctrl.connected or not self._homing:
+                return
+            mapped = self._map_motor_direction(motor_id, direction)
+            self.motor_ctrl.start_motor(motor_id, mapped, homing_speed)
+            await asyncio.sleep(duration)
+            if self._homing and self.motor_ctrl:
+                self.motor_ctrl.stop_motor(motor_id, immediate=True)
+
+        if tasks and self.motor_ctrl and self.motor_ctrl.connected:
+            await asyncio.gather(*[run_one(m, d, t) for m, d, t in tasks])
 
         self.cur_z['upper'] = self.home_z['upper']
         self.cur_z['lower'] = self.home_z['lower']
@@ -794,7 +939,7 @@ class MotorApp:
         self._homing = False
         self._update_all_graphs()
         if hasattr(self, '_status_text') and self._status_text:
-            self._status_text.value = "Returned to home"
+            self._status_text.value = "Returned to home" if tasks else "Already at home"
             self._status_text.color = "#4CAF50"
         self.page.update()
 
@@ -826,10 +971,13 @@ class MotorApp:
         if self.motor_ctrl:
             self.motor_ctrl.stop_all(immediate=True)
         self._homing = False
-        if self.schedule_running:
-            self.schedule_running = False
-            if hasattr(self, 'start_btn') and self.start_btn:
-                self.start_btn.text = "Start"
+        self.schedule_running = False
+        self._limit_alarm_triggered = False  # 알람 플래그 해제 → 이후 한계초과 재감지 가능
+        for i in range(4):
+            self.motor_running[i] = False
+            self._highlight_motor(i, False)
+        if hasattr(self, 'start_btn') and self.start_btn:
+            self.start_btn.text = "Start"
         if hasattr(self, '_status_text') and self._status_text:
             self._status_text.value = "Emergency stopped"
             self._status_text.color = "#ff0000"
@@ -959,25 +1107,35 @@ class MotorApp:
             try:
                 ok = self.motor_ctrl.set_speed_all(new_pps)
                 print(f"[Speed] set_speed_all({new_pps}) → {'OK' if ok else 'FAIL'}")
+                if ok:
+                    self._last_applied_manual_speed_pps = new_pps
             except Exception as ex:
                 print(f"[Speed] error: {ex}")
         self.page.update()
 
+    @staticmethod
+    def _map_motor_direction(motor_id: str, direction: str) -> str:
+        """모터별 방향 보정 (상부 스테이지는 물리 배선 기준 반전)."""
+        if motor_id == "upper_stage":
+            if direction == "+":
+                direction = "-"
+            elif direction == "-":
+                direction = "+"
+        return DIRECTION_MAP.get(direction, 'plus')
+
     def _manual_motor_start(self, motor_idx, direction):
         if self.schedule_running:
             return
+        if self._would_exceed_limit(motor_idx, direction):
+            return
+        self._manual_pressed_at[motor_idx] = time.monotonic()
         self.motor_manual_dir[motor_idx] = direction
         if self.motor_ctrl and self.motor_ctrl.connected:
             speed = self.manual_speeds[self.speed_mode_idx]["pps"]
             motor_id = MOTOR_IDS[motor_idx]
-            mapped_dir = DIRECTION_MAP.get(direction, 'plus')
+            mapped_dir = self._map_motor_direction(motor_id, direction)
             print(f"[Manual] START motor={motor_id} dir={mapped_dir} speed={speed}PPS")
             try:
-                # Always write current dropdown speed before start (PDF 41107 basis).
-                ok_speed = self.motor_ctrl.set_speed_all(speed)
-                print(f"[Manual] set_speed_all({speed}) -> {'OK' if ok_speed else 'FAIL'}")
-                if not ok_speed:
-                    return
                 ok = self.motor_ctrl.start_motor(motor_id, mapped_dir, speed)
                 print(f"[Manual] start → {'OK' if ok else 'FAIL'}")
                 if ok:
@@ -990,9 +1148,11 @@ class MotorApp:
             self.motor_running[motor_idx] = True
             self._highlight_motor(motor_idx, True)
 
-    def _manual_motor_stop(self, motor_idx):
-        if self.schedule_running:
-            return
+    async def _delayed_manual_stop(self, motor_idx: int, delay_sec: float):
+        await asyncio.sleep(max(0.0, delay_sec))
+        self._do_manual_stop(motor_idx)
+
+    def _do_manual_stop(self, motor_idx):
         self.motor_running[motor_idx] = False
         self._highlight_motor(motor_idx, False)
         if self.motor_ctrl and self.motor_ctrl.connected:
@@ -1001,6 +1161,17 @@ class MotorApp:
                 self.motor_ctrl.stop_motor(motor_id)
             except Exception as ex:
                 print(f"Manual stop error: {ex}")
+
+    def _manual_motor_stop(self, motor_idx):
+        if self.schedule_running:
+            return
+        elapsed = time.monotonic() - self._manual_pressed_at[motor_idx]
+        # 회전축은 짧은 탭에서 체감이 어려워 최소 구동시간을 더 길게 준다.
+        min_run = 0.4 if MOTOR_TYPES[motor_idx] == 'rotate' else 0.15
+        if elapsed < min_run:
+            asyncio.create_task(self._delayed_manual_stop(motor_idx, min_run - elapsed))
+            return
+        self._do_manual_stop(motor_idx)
 
     def _highlight_motor(self, motor_idx, active):
         lbl = self._motor_labels[motor_idx]
@@ -1384,7 +1555,9 @@ class MotorApp:
 
     def _update_abs_position(self):
         """현재 스케줄/수동 상태로부터 절대좌표 갱신 (100ms마다 호출)"""
-        dt = 0.1
+        if self._schedule_relative_mode and self.schedule_running:
+            return  # 상대위치 스케줄: 위치는 move_relative 시점에 반영됨
+        dt = self._position_dt
         for mi, key in [(0, 'upper'), (2, 'lower')]:
             if self.motor_running[mi] or (self.schedule_running and self.history[mi]):
                 spd_pps = 0
@@ -1398,6 +1571,10 @@ class MotorApp:
                 mm_per_sec = spd_pps / PULSE_PER_MM
                 sign = -1 if d in ('-', 'minus', 'down') else 1
                 self.cur_z[key] += sign * mm_per_sec * dt
+
+        ok, msg = self._check_stage_limits()
+        if not ok:
+            self._trigger_limit_alarm(msg)
 
         for mi, key in [(1, 'upper'), (3, 'lower')]:
             if self.motor_running[mi] or (self.schedule_running and self.history[mi]):
@@ -1424,19 +1601,19 @@ class MotorApp:
             pass
 
     async def _graph_loop(self):
-        """위치 계산은 100ms, 그래프 렌더링은 500ms 주기"""
+        """위치 계산은 100ms, 그래프 렌더링은 1초 주기"""
         self._graph_loop_running = True
-        render_counter = 0
+        elapsed_since_render = 0.0
         while self._graph_loop_running:
             try:
                 self._update_abs_position()
-                render_counter += 1
-                if render_counter >= 5:
+                elapsed_since_render += self._position_dt
+                if elapsed_since_render >= self._graph_render_interval:
                     self._update_all_graphs()
-                    render_counter = 0
+                    elapsed_since_render = 0.0
             except Exception as ex:
                 print(f"Graph loop error: {ex}")
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(self._position_dt)
 
     # ──────────────────────────────────────────────
     # Schedule logic
@@ -1480,17 +1657,15 @@ class MotorApp:
             return 0
 
         cum = 0.0
-        prev = steps_list[0][0]
         for spd, dur in steps_list:
             if dur <= 0:
-                prev = spd
                 continue
             if t_hours < cum + dur:
-                frac = (t_hours - cum) / dur
-                return prev + (spd - prev) * max(0, min(1, frac))
+                # Step schedule should be piecewise-constant, not ramp-interpolated.
+                return spd
             cum += dur
-            prev = spd
-        return steps_list[-1][0]
+        # After the final step, speed is zero.
+        return 0
 
     def _get_direction_at(self, motor_idx, t_hours) -> str:
         steps_list = []
@@ -1515,6 +1690,27 @@ class MotorApp:
             cum += dur
         return cur_dir
 
+    def _get_relative_segments(self, motor_idx) -> list:
+        """상대위치용: (delta_pulse, speed_pps, duration_sec, direction) 리스트"""
+        segs = []
+        for i, slot in enumerate(self.steps[motor_idx]):
+            if not self.step_enabled[motor_idx][i]:
+                continue
+            spd = int(self._speed_input_to_pps(motor_idx, i))
+            df = slot.get('dur')
+            dd = slot.get('dir_dd')
+            dur_h = self._parse_duration_to_hours(df.value) if df and df.value else 0.0
+            dur_sec = dur_h * 3600.0
+            d = dd if isinstance(dd, str) else (dd.value if dd else '+')
+            if spd <= 0 or dur_sec <= 0:
+                continue
+            sign = 1 if d in ('+', 'plus', 'CW', 'cw') else -1
+            if MOTOR_IDS[motor_idx] == 'upper_stage':
+                sign *= -1  # 상부 스테이지 방향 반전
+            delta_pulse = sign * int(spd * dur_sec)
+            segs.append((delta_pulse, spd, dur_sec, d))
+        return segs
+
     def _apply_schedule(self):
         self.history = [[] for _ in range(4)]
         self.schedule_time = 0.0
@@ -1536,6 +1732,7 @@ class MotorApp:
 
         self.history = [[] for _ in range(4)]
         self.schedule_time = 0.0
+        self._last_schedule_cmd = [{"spd": None, "dir": None} for _ in range(4)]
         self.schedule_running = True
         self.start_btn.text = "Stop"
         self._status_text.value = "Running..."
@@ -1544,43 +1741,115 @@ class MotorApp:
         self.page.run_task(self._schedule_loop)
 
     async def _schedule_loop(self):
-        while self.schedule_running:
-            try:
-                self.schedule_time += 1.0 / 3600.0
+        """연속 이동 방식: start_motor → duration 대기 → stop_motor"""
+        total_dur = max(self._get_total_duration(mi) for mi in range(4))
+        if total_dur <= 0:
+            self.schedule_running = False
+            self.start_btn.text = "Start"
+            self._status_text.value = "No schedule"
+            self.page.update()
+            return
 
-                total_dur = self._get_total_duration(self.selected_motor)
-                if total_dur > 0 and self.schedule_time >= total_dur:
-                    self.schedule_time = total_dur
+        total_sec = total_dur * 3600.0 + 1.0
+        start_time = time.monotonic()
+
+        async def run_motor_segments(motor_idx: int):
+            """연속운전: 방향·속도·시간으로 세그먼트 실행"""
+            motor_id = MOTOR_IDS[motor_idx]
+            segs = self._get_relative_segments(motor_idx)
+            for j, (delta_pulse, spd, dur_sec, d) in enumerate(segs):
+                if not self.schedule_running:
                     if self.motor_ctrl:
-                        self.motor_ctrl.stop_all()
-                    self.schedule_running = False
-                    self.start_btn.text = "Start"
-                    self._status_text.value = "Schedule complete"
-                    self._status_text.color = "#2196F3"
-                    self._update_all_graphs()
-                    self.page.update()
-                    break
+                        self.motor_ctrl.stop_motor(motor_id, immediate=False)  # P0 0501/0502
+                    return
+                # 경과시간 기반 강제 정지: 계획시간 초과 시 세그먼트 시작하지 않음
+                if time.monotonic() - start_time >= total_sec:
+                    if self.motor_ctrl:
+                        self.motor_ctrl.stop_motor(motor_id, immediate=False)  # P0 0501/0502
+                    return
+                if not self.motor_ctrl or not self.motor_ctrl.connected:
+                    await asyncio.sleep(min(dur_sec, max(0, total_sec - (time.monotonic() - start_time))))
+                    continue
+                try:
+                    mapped = self._map_motor_direction(motor_id, d)
+                    self.motor_ctrl.start_motor(motor_id, mapped, spd)
+                    limit_hit = False
+                    if motor_id in ('upper_stage', 'lower_stage'):
+                        start_z = self.cur_z['upper'] if motor_id == 'upper_stage' else self.cur_z['lower']
+                        delta_mm = (-delta_pulse if motor_id == 'upper_stage' else delta_pulse) / PULSE_PER_MM
+                    elapsed = 0.0
+                    while elapsed < dur_sec and self.schedule_running:
+                        if time.monotonic() - start_time >= total_sec:
+                            break
+                        if motor_id in ('upper_stage', 'lower_stage'):
+                            est_z = start_z + (elapsed / dur_sec) * delta_mm
+                            if est_z < 0 or est_z > MAX_TRAVEL_MM:
+                                limit_hit = True
+                                break
+                        chunk = min(0.1, dur_sec - elapsed)
+                        await asyncio.sleep(chunk)
+                        elapsed += chunk
+                    self.motor_ctrl.stop_motor(motor_id, immediate=False)  # P0 0501/0502
+                    if not self.schedule_running or time.monotonic() - start_time >= total_sec:
+                        return
+                    if motor_id == 'upper_stage':
+                        actual_delta = (elapsed / dur_sec) * delta_mm if limit_hit else delta_mm
+                        self.cur_z['upper'] += actual_delta
+                    elif motor_id == 'lower_stage':
+                        actual_delta = (elapsed / dur_sec) * delta_mm if limit_hit else delta_mm
+                        self.cur_z['lower'] += actual_delta
+                    elif motor_id == 'upper_rotate':
+                        self.cur_angle['upper'] += delta_pulse * STEP_ANGLE
+                    else:
+                        self.cur_angle['lower'] += delta_pulse * STEP_ANGLE
+                    if limit_hit:
+                        self.schedule_running = False
+                        ok, msg = self._check_stage_limits()
+                        self._trigger_limit_alarm(msg or "스테이지 한계 초과")
+                        return
+                    ok, msg = self._check_stage_limits()
+                    if not ok:
+                        self.schedule_running = False
+                        self._trigger_limit_alarm(msg)
+                        return
+                except Exception as ex:
+                    print(f"[Schedule] {motor_id} seg{j} error: {ex}")
+                    await asyncio.sleep(dur_sec)
 
+        async def history_updater():
+            """그래프용 진행 표시 (모터 실행과 병렬)"""
+            while self.schedule_running and self.schedule_time < total_dur:
                 for mi in range(4):
-                    spd = int(self._get_speed_at(mi, self.schedule_time))
-                    self.history[mi].append(spd)
+                    self.history[mi].append(int(self._get_speed_at(mi, self.schedule_time)))
+                self.schedule_time += self._schedule_cmd_dt / 3600.0
+                await asyncio.sleep(self._schedule_cmd_dt)
 
-                    if self.motor_ctrl and self.motor_ctrl.connected:
-                        motor_id = MOTOR_IDS[mi]
-                        direction = self._get_direction_at(mi, self.schedule_time)
-                        mapped_dir = DIRECTION_MAP.get(direction, 'plus')
-                        try:
-                            if spd > 0:
-                                self.motor_ctrl.start_motor(motor_id, mapped_dir, spd)
-                            else:
-                                self.motor_ctrl.stop_motor(motor_id)
-                        except Exception as ex:
-                            print(f"Motor {motor_id} error: {ex}")
+        async def schedule_watchdog():
+            """계획시간 도달 시 강제 정지"""
+            await asyncio.sleep(total_sec)
+            if self.schedule_running:
+                self.schedule_running = False
+                if self.motor_ctrl:
+                    # P0 방식: 0x0501(X축), 0x0502(Y축) 감속 정지
+                    self.motor_ctrl.stop_all(immediate=False)
+                print("[Schedule] Watchdog: planned time reached, P0 0501/0502 sent")
 
-            except Exception as ex:
-                print(f"Schedule loop error: {ex}")
+        # 4축 병렬 + history + watchdog 동시 실행
+        await asyncio.gather(
+            asyncio.gather(*[run_motor_segments(mi) for mi in range(4)]),
+            history_updater(),
+            schedule_watchdog(),
+        )
 
-            await asyncio.sleep(1.0)
+        if self.motor_ctrl:
+            # P0 방식: 0x0501(X축), 0x0502(Y축) 감속 정지
+            self.motor_ctrl.stop_all(immediate=False)
+        self.schedule_running = False
+        self.start_btn.text = "Start"
+        self._status_text.value = "Schedule complete"
+        self._status_text.color = "#2196F3"
+        self._update_all_graphs()
+        self.page.update()
 
     # ──────────────────────────────────────────────
     # Main layout
@@ -1637,6 +1906,7 @@ class MotorApp:
         page.add(ft.Stack([layout, self._numpad_overlay, self._durpad_overlay], expand=True))
 
         page.run_task(self._graph_loop)
+        page.run_task(self._auto_connect_on_start)
 
     def _nav_btn(self, label, on_click):
         return ft.Container(
