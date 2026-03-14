@@ -113,11 +113,21 @@ class MotorApp:
             self.home_angle = data.get('home_angle', {'upper': 0.0, 'lower': 0.0})
             self.stage_gap = data.get('stage_gap', STAGE_GAP_MM)
 
-            self.cur_z = dict(self.home_z)
-            self.cur_angle = dict(self.home_angle)
             for k in ('upper', 'lower'):
                 self.home_z[k] = max(0, min(MAX_TRAVEL_MM, self.home_z.get(k, 0)))
-                self.cur_z[k] = self.home_z[k]
+
+            # 마지막 위치 복원 (없으면 홈 위치로)
+            last_z = data.get('last_z', self.home_z)
+            last_angle = data.get('last_angle', self.home_angle)
+            self.cur_z = {
+                'upper': max(0, min(MAX_TRAVEL_MM, last_z.get('upper', self.home_z['upper']))),
+                'lower': max(0, min(MAX_TRAVEL_MM, last_z.get('lower', self.home_z['lower']))),
+            }
+            self.cur_angle = {
+                'upper': last_angle.get('upper', self.home_angle['upper']),
+                'lower': last_angle.get('lower', self.home_angle['lower']),
+            }
+            print(f"[Position] restored: z={self.cur_z}, angle={self.cur_angle}")
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             pass
 
@@ -179,13 +189,30 @@ class MotorApp:
             'home_z': self.home_z,
             'home_angle': self.home_angle,
             'stage_gap': self.stage_gap,
-            
+            'last_z': self.cur_z,
+            'last_angle': self.cur_angle,
         }
         try:
             with open(self._config_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as ex:
             print(f"Home save error: {ex}")
+
+    def _save_last_position(self):
+        """현재 위치만 JSON에 업데이트 (앱 종료 시 호출)"""
+        try:
+            try:
+                with open(self._config_path, 'r') as f:
+                    data = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {}
+            data['last_z'] = self.cur_z
+            data['last_angle'] = self.cur_angle
+            with open(self._config_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"[Position] saved: z={self.cur_z}, angle={self.cur_angle}")
+        except Exception as ex:
+            print(f"Position save error: {ex}")
 
     # ──────────────────────────────────────────────
     # Helpers
@@ -577,6 +604,12 @@ class MotorApp:
         stop_all_btn = ft.ElevatedButton("STOP ALL", bgcolor="#ff0000", color="white",
                                          on_click=lambda e: self._confirm_emergency_stop())
 
+        reset_to_bottom_btn = ft.ElevatedButton(
+            "모터 최하단 위치로 초기화",
+            bgcolor="#607D8B", color="white",
+            on_click=lambda e: self._confirm_reset_to_bottom(),
+        )
+
         self._diag_text = ft.Text("", size=11, selectable=True, color="#888888")
 
         return ft.Container(
@@ -592,11 +625,66 @@ class MotorApp:
                 ft.Text("Stage Configuration", size=14, weight=ft.FontWeight.BOLD),
                 ft.Row([ft.Text("Gap (mm):", width=80), self._gap_input, gap_apply_btn]),
                 ft.Divider(),
+                ft.Text("Position Reset", size=14, weight=ft.FontWeight.BOLD),
+                ft.Text("두 모터가 물리적으로 최하단에 있을 때 사용", size=11, color="#888888"),
+                reset_to_bottom_btn,
+                ft.Divider(),
                 stop_all_btn,
                 self._diag_text,
             ], spacing=10),
             padding=15,
         )
+
+    def _confirm_reset_to_bottom(self):
+        def _do_reset(e):
+            dlg.open = False
+            self.page.update()
+            self._reset_to_bottom()
+
+        def _cancel(e):
+            dlg.open = False
+            self.page.update()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("최하단 위치 초기화", weight=ft.FontWeight.BOLD),
+            content=ft.Text(
+                "두 스테이지 모터가 현재 물리적으로\n최하단(0mm)에 위치해 있습니까?\n\n"
+                "확인 시 소프트웨어 위치가 0mm로 초기화됩니다.",
+                size=13,
+            ),
+            actions=[
+                ft.TextButton("취소", on_click=_cancel),
+                ft.ElevatedButton("초기화", bgcolor="#607D8B", color="white", on_click=_do_reset),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    def _reset_to_bottom(self):
+        """두 스테이지 모터가 최하단에 있다는 전제로 소프트웨어 위치를 0으로 초기화"""
+        self.cur_z = {'upper': 0.0, 'lower': 0.0}
+        self.cur_angle = {'upper': 0.0, 'lower': 0.0}
+        self.home_z = {'upper': 0.0, 'lower': 0.0}
+        self.home_angle = {'upper': 0.0, 'lower': 0.0}
+        self.stage_gap = STAGE_GAP_MM
+        if hasattr(self, '_gap_input') and self._gap_input:
+            self._gap_input.value = str(self.stage_gap)
+            self._gap_input._display.value = str(self.stage_gap)
+        # 드라이버 위치 카운터도 클리어
+        if self.motor_ctrl and self.motor_ctrl.connected:
+            try:
+                self.motor_ctrl.clear_position_counter_all()
+            except Exception as ex:
+                print(f"[ResetToBottom] clear_position_counter_all error: {ex}")
+        self._save_home()
+        self._update_all_graphs()
+        if hasattr(self, '_status_text') and self._status_text:
+            self._status_text.value = "위치 초기화 완료 (최하단 = 0mm)"
+            self._status_text.color = "#607D8B"
+        self.page.update()
 
     def _apply_gap(self):
         try:
@@ -853,6 +941,7 @@ class MotorApp:
             self.motor_ctrl.stop_all(immediate=True)
             self.motor_ctrl.disconnect()
             self.motor_ctrl = None
+        self._save_last_position()
         self._set_conn_status("Disconnected", "red")
         self.page.update()
 
@@ -1866,6 +1955,12 @@ class MotorApp:
         page.window.height = 600
         page.padding = 0
         page.bgcolor = "#f0f0f0"
+
+        def on_window_event(e):
+            if e.data in ("close", "destroy"):
+                self._save_last_position()
+
+        page.window.on_event = on_window_event
 
         self._build_numpad()
         self._build_duration_pad()
