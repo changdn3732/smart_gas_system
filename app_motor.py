@@ -549,7 +549,11 @@ class MotorApp:
         )
         self._baud_dropdown = ft.Dropdown(
             width=120, value="9600", text_size=13, dense=True,
-            options=[ft.DropdownOption("9600"), ft.DropdownOption("19200")],
+            options=[
+                ft.DropdownOption("9600"),
+                ft.DropdownOption("19200"),
+                ft.DropdownOption("38400"),
+            ],
         )
 
         self._conn_status = ft.Text(self._conn_status_value, color=self._conn_status_color, size=13)
@@ -624,7 +628,7 @@ class MotorApp:
             baud = int(self._baud_dropdown.value)
         except (ValueError, TypeError):
             baud = 9600
-        if baud not in (9600, 19200):
+        if baud not in (9600, 19200, 38400):
             baud = 9600
             self._baud_dropdown.value = "9600"
         self.motor_ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=True)
@@ -676,7 +680,7 @@ class MotorApp:
         except Exception:
             pass
 
-        for baud in (9600, 19200):
+        for baud in (9600, 19200, 38400):
             ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=True)
             if not ctrl.connect():
                 continue
