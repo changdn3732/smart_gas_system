@@ -510,7 +510,11 @@ class MotorController:
         self.driver1 = PMC2HSPDriver(slave_id=1, port=port, baudrate=baudrate)
         self.driver2 = PMC2HSPDriver(slave_id=2, port=port, baudrate=baudrate)
         self.motor_speeds: Dict[str, int] = {k: 0 for k in self.MOTOR_MAP}
+        self.motor_directions: Dict[str, Optional[MotorDirection]] = {k: None for k in self.MOTOR_MAP}
         self.on_log: Optional[Callable] = None
+
+        # 역방향 전환 시 정지 후 대기 시간 (초)
+        self.reverse_guard_delay: float = 0.15
 
     def log(self, msg: str):
         if self.on_log:
@@ -642,10 +646,26 @@ class MotorController:
         d = dir_map.get(direction.lower())
         if not d:
             return False
+
+        # 역방향 전환 가드: 반대 방향 명령 시 정지 → 대기 → 재시작
+        _fwd = {MotorDirection.PLUS, MotorDirection.CW}
+        _bwd = {MotorDirection.MINUS, MotorDirection.CCW}
+        cur = self.motor_directions.get(motor_id)
+        if cur is not None and self.motor_speeds.get(motor_id, 0) > 0:
+            is_reverse = (cur in _fwd and d in _bwd) or (cur in _bwd and d in _fwd)
+            if is_reverse:
+                drv, axis = self._get_driver_axis(motor_id)
+                drv.stop(axis, immediate=True)
+                self.motor_speeds[motor_id] = 0
+                self.motor_directions[motor_id] = None
+                self.log(f"[ReverseGuard] {motor_id}: stop ({cur.value}→{d.value}), wait {self.reverse_guard_delay}s")
+                time.sleep(self.reverse_guard_delay)
+
         drv, axis = self._get_driver_axis(motor_id)
         ok = drv.move_with_speed(axis, d, speed)
         if ok:
             self.motor_speeds[motor_id] = speed
+            self.motor_directions[motor_id] = d
         return ok
 
     def stop_motor(self, motor_id: str, immediate: bool = False) -> bool:
@@ -655,6 +675,7 @@ class MotorController:
         ok = drv.stop(axis, immediate)
         if ok:
             self.motor_speeds[motor_id] = 0
+            self.motor_directions[motor_id] = None
         return ok
 
     def stop_all(self, immediate: bool = False) -> bool:
@@ -662,6 +683,7 @@ class MotorController:
         self.driver2.stop_all(immediate)
         for k in self.motor_speeds:
             self.motor_speeds[k] = 0
+            self.motor_directions[k] = None
         return True
 
     def clear_position_counter_all(self) -> bool:
