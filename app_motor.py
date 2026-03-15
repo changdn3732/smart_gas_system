@@ -247,11 +247,10 @@ class MotorApp:
                 return f"{dist_mm:.2f} mm"
             return f"{dist_mm * 1000:.1f} μm"
         else:
-            deg = speed_pps_to_deg_per_sec(speed_pps) * seconds
-            revs = deg / 360.0
-            if revs >= 1.0:
-                return f"{revs:.2f} rev"
-            return f"{deg:.1f}°"
+            # PPS → RPM → 총 회전수
+            rpm = speed_pps_to_deg_per_sec(speed_pps) * 60.0 / 360.0
+            revs = rpm * (seconds / 60.0)
+            return f"{revs:.2f} rev"
 
     # ──────────────────────────────────────────────
     # UI Components (table inputs, keypads)
@@ -1141,16 +1140,13 @@ class MotorApp:
                 else:
                     slot['dist_text'].value = f"{warn}{dist_mm:.1f} mm"
             else:
-                pps = min(self.MAX_PPS, max(0, int(raw / STEP_ANGLE)))
+                # raw = RPM (스테이지 기준)
+                pps = min(self.MAX_PPS, max(0, int(raw * 360.0 / 60.0 / STEP_ANGLE)))
                 clamped = pps >= self.MAX_PPS
-                actual_deg_s = speed_pps_to_deg_per_sec(pps)
-                seconds = dur_h * 3600
-                deg = actual_deg_s * seconds
+                minutes = dur_h * 60.0
+                revolutions = raw * minutes
                 warn = "⚠" if clamped else ""
-                if deg >= 360:
-                    slot['dist_text'].value = f"{warn}{deg / 360:.2f} rev"
-                else:
-                    slot['dist_text'].value = f"{warn}{deg:.1f}°"
+                slot['dist_text'].value = f"{warn}{revolutions:.2f} rev"
         else:
             slot['dist_text'].value = "-"
 
@@ -1352,7 +1348,7 @@ class MotorApp:
         if mt == 'linear':
             speed_header = f"Speed ({self.speed_unit})"
         else:
-            speed_header = "Speed (°/s)"
+            speed_header = "Speed (rpm)"
         dist_header = "Distance" if mt == 'linear' else "Rotation"
 
         unit_btn = ft.Container(
@@ -1738,7 +1734,8 @@ class MotorApp:
         if mt == 'linear':
             return self._speed_to_pps(raw)
         else:
-            return min(self.MAX_PPS, max(0, int(raw / STEP_ANGLE)))
+            # RPM → PPS: 1 RPM = 360°/60s / (STEP_ANGLE °/pulse)
+            return min(self.MAX_PPS, max(0, int(raw * 360.0 / 60.0 / STEP_ANGLE)))
 
     def _get_speed_at(self, motor_idx, t_hours) -> float:
         steps_list = []
