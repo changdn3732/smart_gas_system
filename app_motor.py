@@ -1783,9 +1783,14 @@ class MotorApp:
             cum += dur
         return cur_dir
 
+    # 스케줄 모드 펄스 배율: 선형 스테이지 ×2, 회전 ×6
+    SCHEDULE_PULSE_MULT = {'linear': 2, 'rotate': 6}
+
     def _get_relative_segments(self, motor_idx) -> list:
         """상대위치용: (delta_pulse, speed_pps, duration_sec, direction) 리스트"""
         segs = []
+        mt = MOTOR_TYPES[motor_idx]
+        pulse_mult = self.SCHEDULE_PULSE_MULT.get(mt, 1)
         for i, slot in enumerate(self.steps[motor_idx]):
             if not self.step_enabled[motor_idx][i]:
                 continue
@@ -1797,11 +1802,13 @@ class MotorApp:
             d = dd if isinstance(dd, str) else (dd.value if dd else '+')
             if spd <= 0 or dur_sec <= 0:
                 continue
+            # 스케줄 펄스 배율 적용 (선형 ×2, 회전 ×6)
+            spd_actual = min(self.MAX_PPS, spd * pulse_mult)
             sign = 1 if d in ('+', 'plus', 'CW', 'cw') else -1
             if MOTOR_IDS[motor_idx] == 'upper_stage':
                 sign *= -1  # 상부 스테이지 방향 반전
-            delta_pulse = sign * int(spd * dur_sec)
-            segs.append((delta_pulse, spd, dur_sec, d))
+            delta_pulse = sign * int(spd_actual * dur_sec)
+            segs.append((delta_pulse, spd_actual, dur_sec, d))
         return segs
 
     def _apply_schedule(self):
