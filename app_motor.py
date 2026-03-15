@@ -653,20 +653,20 @@ class MotorApp:
         )
 
     def _check_speed_ratio(self):
-        """드라이버 speed_ratio / start_speed 레지스터 실시간 읽기"""
+        """드라이버 speed_ratio / start_speed / drive_speed1 레지스터 실시간 읽기"""
         if not (self.motor_ctrl and self.motor_ctrl.connected):
             self._speed_ratio_text.value = "연결되지 않음"
             self.page.update()
             return
 
-        from devices.motor_controller import X_REGISTERS, Y_REGISTERS, MotorAxis
+        import devices.motor_controller as _mc
         lines = []
         client = self.motor_ctrl.client
-        _SLAVE_KW = "slave" if hasattr(client, "slave") else "unit"
+        slave_kw = _mc._SLAVE_KW  # connect 시 자동 감지된 키워드 사용
 
         for drv_label, drv in [("Driver1", self.motor_ctrl.driver1),
                                 ("Driver2", self.motor_ctrl.driver2)]:
-            for ax_label, regs in [("X", X_REGISTERS), ("Y", Y_REGISTERS)]:
+            for ax_label, regs in [("X", _mc.X_REGISTERS), ("Y", _mc.Y_REGISTERS)]:
                 row = f"[{drv_label} {ax_label}]"
                 for param in ("speed_ratio", "start_speed", "drive_speed1"):
                     addr = regs.get(param)
@@ -676,7 +676,7 @@ class MotorApp:
                     try:
                         rb = client.read_holding_registers(
                             address=addr, count=1,
-                            **{_SLAVE_KW: drv.slave_id}
+                            **{slave_kw: drv.slave_id}
                         )
                         val = rb.registers[0] if hasattr(rb, "registers") else "ERR"
                     except Exception as ex:
