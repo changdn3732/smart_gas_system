@@ -1876,9 +1876,13 @@ class MotorApp:
                     mapped = self._map_motor_direction(motor_id, d)
                     self.motor_ctrl.start_motor(motor_id, mapped, spd)
                     limit_hit = False
+                    # 위치 추적용 delta_mm: 배율 제거한 실제 물리 이동거리
+                    mt = MOTOR_TYPES[motor_idx]
+                    pulse_mult = self.SCHEDULE_PULSE_MULT.get(mt, 1)
                     if motor_id in ('upper_stage', 'lower_stage'):
                         start_z = self.cur_z['upper'] if motor_id == 'upper_stage' else self.cur_z['lower']
-                        delta_mm = (-delta_pulse if motor_id == 'upper_stage' else delta_pulse) / PULSE_PER_MM
+                        raw_delta = (-delta_pulse if motor_id == 'upper_stage' else delta_pulse)
+                        delta_mm = raw_delta / PULSE_PER_MM / pulse_mult
                     elapsed = 0.0
                     while elapsed < dur_sec and self.schedule_running:
                         if time.monotonic() - start_time >= total_sec:
@@ -1901,9 +1905,10 @@ class MotorApp:
                         actual_delta = (elapsed / dur_sec) * delta_mm if limit_hit else delta_mm
                         self.cur_z['lower'] += actual_delta
                     elif motor_id == 'upper_rotate':
-                        self.cur_angle['upper'] += delta_pulse * STEP_ANGLE
+                        # 회전도 배율 제거한 실제 각도로 추적
+                        self.cur_angle['upper'] += (delta_pulse / pulse_mult) * STEP_ANGLE
                     else:
-                        self.cur_angle['lower'] += delta_pulse * STEP_ANGLE
+                        self.cur_angle['lower'] += (delta_pulse / pulse_mult) * STEP_ANGLE
                     if limit_hit:
                         self.schedule_running = False
                         ok, msg = self._check_stage_limits()
