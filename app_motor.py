@@ -1697,8 +1697,12 @@ class MotorApp:
         """위치 계산은 100ms, 그래프 렌더링은 1초 주기"""
         self._graph_loop_running = True
         elapsed_since_render = 0.0
+        _last_tick = time.monotonic()
         while self._graph_loop_running:
             try:
+                _now = time.monotonic()
+                self._position_dt = min(_now - _last_tick, 0.5)  # 실제 경과시간 사용, 최대 0.5s 캡
+                _last_tick = _now
                 self._update_abs_position()
                 elapsed_since_render += self._position_dt
                 if elapsed_since_render >= self._graph_render_interval:
@@ -1706,7 +1710,7 @@ class MotorApp:
                     elapsed_since_render = 0.0
             except Exception as ex:
                 print(f"Graph loop error: {ex}")
-            await asyncio.sleep(self._position_dt)
+            await asyncio.sleep(0.1)
 
     # ──────────────────────────────────────────────
     # Schedule logic
