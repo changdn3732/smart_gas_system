@@ -45,10 +45,10 @@ CMD_GAP_SEC = 0.05
 
 # ==================== 상수 정의 ====================
 
-# 선형축(5상 스테이지): 실측 0.1mm/s 입력→1mm/s 동작 시 10배 보정 → 100 pulse/mm
+# 선형축(5상 스테이지): 실측 10mm/s 1cm 이동에 5초 → 5000 pulse/mm
 PULSE_PER_REV = 500
 MM_PER_REV = 5
-PULSE_PER_MM = 1000
+PULSE_PER_MM = 5000
 
 # 회전축: 실측 보정값 — 600PPS×10s=480° 기준
 # 0.08°/commanded_pulse (기어비·마이크로스텝 포함 실효값)
@@ -56,6 +56,10 @@ ROTATE_DEG_PER_PULSE = 0.1    # °/pulse (실측: 0.1rpm=60PPS → 10s에 60° �
 
 # Backward-compat alias: 회전 관련 기존 코드에서 참조
 STEP_ANGLE = ROTATE_DEG_PER_PULSE
+
+# drive_speed1 레지스터: 최대 8000, speed_ratio로 실제 PPS 확대
+DRIVE_SPEED_REGISTER_MAX = 8000
+SPEED_RATIO = 10   # actual_PPS = register_value × speed_ratio
 
 CMD_REGISTER = 0x0000   # 40001: P0 명령 전용
 P1_REGISTER = 0x0001   # 40002: P1 명령 (0001~0009 = P1 명령표)
@@ -267,11 +271,12 @@ class PMC2HSPDriver:
     def set_speed(self, axis: MotorAxis, speed: int, speed_num: int = 1) -> bool:
         if speed < 1 or speed > 500000:
             return False
+        reg_val = min(DRIVE_SPEED_REGISTER_MAX, max(1, round(speed / SPEED_RATIO)))
         registers = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
         speed_key = f'drive_speed{speed_num}'
         if speed_key not in registers:
             return False
-        return self._write_register(registers[speed_key], speed)
+        return self._write_register(registers[speed_key], reg_val)
 
     def set_accel(self, axis: MotorAxis, accel: int) -> bool:
         if accel < 1 or accel > 500000:
@@ -334,12 +339,13 @@ class PMC2HSPDriver:
         return ok_x and ok_y
 
     def write_drive_speed1(self, axis: MotorAxis, speed: int) -> bool:
-        """Drive Speed 1 레지스터(X:0x0458-1, Y:0x0464-1)에 속도값 쓰기"""
+        """Drive Speed 1 레지스터에 쓰기. target_PPS → register_value = min(8000, PPS/SPEED_RATIO)"""
         regs = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
         addr = regs['drive_speed1']
-        ok = self._write_register(addr, speed)
-        self.log(f"write_drive_speed1: axis={axis.value} speed={speed} "
-                 f"addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
+        reg_val = min(DRIVE_SPEED_REGISTER_MAX, max(1, round(speed / SPEED_RATIO)))
+        ok = self._write_register(addr, reg_val)
+        self.log(f"write_drive_speed1: axis={axis.value} target={speed}PPS → reg={reg_val} "
+                 f"(×{SPEED_RATIO}) addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
         return ok
 
     def clear_position_counter(self, axis: MotorAxis) -> bool:
@@ -587,11 +593,11 @@ class MotorController:
 
     def _initialize_drivers(self):
         """연결 직후 파라미터 초기화 + readback 검증.
-        - speed_ratio = 1 : 속도 배율 초기화
+        - speed_ratio = 10 : drive_speed1(최대8000) × 10 = 최대 80,000 PPS
         - start_speed  = 1 : 최소 기동속도를 1PPS로 낮춰 저속 명령이 무시되지 않도록
         """
         INIT_PARAMS = [
-            ('speed_ratio', 1),
+            ('speed_ratio', SPEED_RATIO),
             ('start_speed', 1),
         ]
         for drv in (self.driver1, self.driver2):
@@ -620,7 +626,7 @@ class MotorController:
                         f"{param_name}={param_val} write={'OK' if write_ok else 'FAIL'} "
                         f"readback={actual}"
                     )
-        self.log("드라이버 초기화 완료 (speed_ratio=1, start_speed=1)")
+        self.log(f"드라이버 초기화 완료 (speed_ratio={SPEED_RATIO}, start_speed=1)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
