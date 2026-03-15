@@ -45,10 +45,10 @@ CMD_GAP_SEC = 0.05
 
 # ==================== 상수 정의 ====================
 
-# 선형축(5상 스테이지): 분해능 내장, 1,000 pulse = 1 mm (0.001 mm/pulse)
+# 선형축(5상 스테이지): 실측 0.1mm/s 입력→1mm/s 동작 시 10배 보정 → 100 pulse/mm
 PULSE_PER_REV = 500
 MM_PER_REV = 5
-PULSE_PER_MM = 1000
+PULSE_PER_MM = 100
 
 # 회전축: 실측 보정값 — 600PPS×10s=480° 기준
 # 0.08°/commanded_pulse (기어비·마이크로스텝 포함 실효값)
