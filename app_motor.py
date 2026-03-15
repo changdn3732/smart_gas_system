@@ -616,6 +616,13 @@ class MotorApp:
             on_click=lambda e: self._confirm_reset_to_bottom(),
         )
 
+        speed_ratio_btn = ft.ElevatedButton(
+            "속도 배율 확인 (speed_ratio)",
+            bgcolor="#37474F", color="white",
+            on_click=lambda e: self._check_speed_ratio(),
+        )
+        self._speed_ratio_text = ft.Text("", size=11, selectable=True, color="#80CBC4")
+
         self._diag_text = ft.Text("", size=11, selectable=True, color="#888888")
 
         return ft.Container(
@@ -635,11 +642,50 @@ class MotorApp:
                 ft.Text("두 모터가 물리적으로 최하단에 있을 때 사용", size=11, color="#888888"),
                 reset_to_bottom_btn,
                 ft.Divider(),
+                ft.Text("Driver Register Check", size=14, weight=ft.FontWeight.BOLD),
+                speed_ratio_btn,
+                self._speed_ratio_text,
+                ft.Divider(),
                 stop_all_btn,
                 self._diag_text,
             ], spacing=10),
             padding=15,
         )
+
+    def _check_speed_ratio(self):
+        """드라이버 speed_ratio / start_speed 레지스터 실시간 읽기"""
+        if not (self.motor_ctrl and self.motor_ctrl.connected):
+            self._speed_ratio_text.value = "연결되지 않음"
+            self.page.update()
+            return
+
+        from devices.motor_controller import X_REGISTERS, Y_REGISTERS, MotorAxis
+        lines = []
+        client = self.motor_ctrl.client
+        _SLAVE_KW = "slave" if hasattr(client, "slave") else "unit"
+
+        for drv_label, drv in [("Driver1", self.motor_ctrl.driver1),
+                                ("Driver2", self.motor_ctrl.driver2)]:
+            for ax_label, regs in [("X", X_REGISTERS), ("Y", Y_REGISTERS)]:
+                row = f"[{drv_label} {ax_label}]"
+                for param in ("speed_ratio", "start_speed", "drive_speed1"):
+                    addr = regs.get(param)
+                    if addr is None:
+                        row += f"  {param}=N/A"
+                        continue
+                    try:
+                        rb = client.read_holding_registers(
+                            address=addr, count=1,
+                            **{_SLAVE_KW: drv.slave_id}
+                        )
+                        val = rb.registers[0] if hasattr(rb, "registers") else "ERR"
+                    except Exception as ex:
+                        val = f"ERR({ex})"
+                    row += f"  {param}={val}"
+                lines.append(row)
+
+        self._speed_ratio_text.value = "\n".join(lines)
+        self.page.update()
 
     def _confirm_reset_to_bottom(self):
         def _do_reset(e):
