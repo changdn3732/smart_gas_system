@@ -45,10 +45,10 @@ CMD_GAP_SEC = 0.05
 
 # ==================== 상수 정의 ====================
 
-# 선형축(5상 스테이지): 실측 10mm/s 1cm 이동에 5초 → 5000 pulse/mm
+# 선형축(5상 스테이지): 실측 10mm/s 1cm에 2초 → 10,000 pulse/mm (50kPPS→5mm/s)
 PULSE_PER_REV = 500
 MM_PER_REV = 5
-PULSE_PER_MM = 5000
+PULSE_PER_MM = 10000
 
 # 회전축: 실측 보정값 — 600PPS×10s=480° 기준
 # 0.08°/commanded_pulse (기어비·마이크로스텝 포함 실효값)
@@ -59,7 +59,8 @@ STEP_ANGLE = ROTATE_DEG_PER_PULSE
 
 # drive_speed1 레지스터: 최대 8000, speed_ratio로 실제 PPS 확대
 DRIVE_SPEED_REGISTER_MAX = 8000
-SPEED_RATIO = 10   # actual_PPS = register_value × speed_ratio
+SPEED_RATIO_LINEAR = 13   # X축(상하스테이지)만: 10mm/s=100kPPS → reg=7692
+SPEED_RATIO_ROTATE = 1    # Y축(회전)은 배율 없음, 입력값 그대로
 
 CMD_REGISTER = 0x0000   # 40001: P0 명령 전용
 P1_REGISTER = 0x0001   # 40002: P1 명령 (0001~0009 = P1 명령표)
@@ -165,10 +166,12 @@ class MotorStatus:
 
 
 class PMC2HSPDriver:
-    def __init__(self, slave_id: int = 1, port: str = '/dev/ttyS1', baudrate: int = 9600):
+    def __init__(self, slave_id: int = 1, port: str = '/dev/ttyS1', baudrate: int = 9600,
+                 is_linear_stage: bool = False):
         self.slave_id = slave_id
         self.port = port
         self.baudrate = baudrate
+        self.is_linear_stage = is_linear_stage
         self.client: Optional[ModbusSerialClient] = None
         self.connected = False
         self.x_status = MotorStatus()
@@ -271,7 +274,8 @@ class PMC2HSPDriver:
     def set_speed(self, axis: MotorAxis, speed: int, speed_num: int = 1) -> bool:
         if speed < 1 or speed > 500000:
             return False
-        reg_val = min(DRIVE_SPEED_REGISTER_MAX, max(1, round(speed / SPEED_RATIO)))
+        ratio = SPEED_RATIO_LINEAR if self.is_linear_stage else SPEED_RATIO_ROTATE
+        reg_val = min(DRIVE_SPEED_REGISTER_MAX, max(1, round(speed / ratio)))
         registers = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
         speed_key = f'drive_speed{speed_num}'
         if speed_key not in registers:
@@ -339,13 +343,14 @@ class PMC2HSPDriver:
         return ok_x and ok_y
 
     def write_drive_speed1(self, axis: MotorAxis, speed: int) -> bool:
-        """Drive Speed 1 레지스터에 쓰기. target_PPS → register_value = min(8000, PPS/SPEED_RATIO)"""
+        """Drive Speed 1 레지스터에 쓰기. linear 타입 드라이버만 스케일"""
+        ratio = SPEED_RATIO_LINEAR if self.is_linear_stage else SPEED_RATIO_ROTATE
+        reg_val = min(DRIVE_SPEED_REGISTER_MAX, max(1, round(speed / ratio)))
         regs = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
         addr = regs['drive_speed1']
-        reg_val = min(DRIVE_SPEED_REGISTER_MAX, max(1, round(speed / SPEED_RATIO)))
         ok = self._write_register(addr, reg_val)
         self.log(f"write_drive_speed1: axis={axis.value} target={speed}PPS → reg={reg_val} "
-                 f"(×{SPEED_RATIO}) addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
+                 f"(×{ratio}) addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
         return ok
 
     def clear_position_counter(self, axis: MotorAxis) -> bool:
@@ -519,8 +524,8 @@ class MotorController:
         self.rs485_mode = rs485_mode
         self.client: Optional[ModbusSerialClient] = None
         self.connected = False
-        self.driver1 = PMC2HSPDriver(slave_id=1, port=port, baudrate=baudrate)
-        self.driver2 = PMC2HSPDriver(slave_id=2, port=port, baudrate=baudrate)
+        self.driver1 = PMC2HSPDriver(slave_id=1, port=port, baudrate=baudrate, is_linear_stage=False)  # rotate
+        self.driver2 = PMC2HSPDriver(slave_id=2, port=port, baudrate=baudrate, is_linear_stage=True)   # linear
         self.motor_speeds: Dict[str, int] = {k: 0 for k in self.MOTOR_MAP}
         self.motor_directions: Dict[str, Optional[MotorDirection]] = {k: None for k in self.MOTOR_MAP}
         self.on_log: Optional[Callable] = None
@@ -593,16 +598,17 @@ class MotorController:
 
     def _initialize_drivers(self):
         """연결 직후 파라미터 초기화 + readback 검증.
-        - speed_ratio = 10 : drive_speed1(최대8000) × 10 = 최대 80,000 PPS
-        - start_speed  = 1 : 최소 기동속도를 1PPS로 낮춰 저속 명령이 무시되지 않도록
+        - Driver1(rotate): speed_ratio=1
+        - Driver2(linear): speed_ratio=13
+        - start_speed = 1 : 최소 기동속도
         """
-        INIT_PARAMS = [
-            ('speed_ratio', SPEED_RATIO),
-            ('start_speed', 1),
-        ]
         for drv in (self.driver1, self.driver2):
+            speed_ratio = SPEED_RATIO_LINEAR if drv.is_linear_stage else SPEED_RATIO_ROTATE
             for axis, regs in [(MotorAxis.X, X_REGISTERS), (MotorAxis.Y, Y_REGISTERS)]:
-                for param_name, param_val in INIT_PARAMS:
+                for param_name, param_val in [
+                    ('speed_ratio', speed_ratio),
+                    ('start_speed', 1),
+                ]:
                     if param_name not in regs:
                         continue
                     addr = regs[param_name]
@@ -626,7 +632,7 @@ class MotorController:
                         f"{param_name}={param_val} write={'OK' if write_ok else 'FAIL'} "
                         f"readback={actual}"
                     )
-        self.log(f"드라이버 초기화 완료 (speed_ratio={SPEED_RATIO}, start_speed=1)")
+        self.log("드라이버 초기화 완료 (Driver1 rotate:ratio=1, Driver2 linear:ratio=13)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
