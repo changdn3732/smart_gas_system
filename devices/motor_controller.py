@@ -52,7 +52,7 @@ PULSE_PER_MM = 1000
 
 # 회전축: 실측 보정값 — 600PPS×10s=480° 기준
 # 0.08°/commanded_pulse (기어비·마이크로스텝 포함 실효값)
-ROTATE_DEG_PER_PULSE = 0.01   # °/pulse (400pulse/모터rev × 90:1 기어비 → 스테이지 4°/rev → 0.01°/pulse)
+ROTATE_DEG_PER_PULSE = 0.1    # °/pulse (실측: 0.1rpm=60PPS → 10s에 60° → 0.1°/pulse)
 
 # Backward-compat alias: 회전 관련 기존 코드에서 참조
 STEP_ANGLE = ROTATE_DEG_PER_PULSE
