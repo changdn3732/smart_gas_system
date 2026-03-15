@@ -1487,8 +1487,8 @@ class MotorApp:
             # 속도 입력 필드
             spd_field = ft.TextField(
                 value=self._manual_spd_val[mi],
-                width=80, height=36, text_size=13, dense=True,
-                suffix_text=SPD_UNITS[mi],
+                width=95, height=36, text_size=13, dense=True,
+                suffix=ft.Text(SPD_UNITS[mi], size=11, color="#90CAF9"),
                 border_color="#90CAF9",
                 on_change=lambda e, i=mi: self._on_manual_spd_change(e, i),
             )
