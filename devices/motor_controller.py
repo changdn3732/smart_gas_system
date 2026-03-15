@@ -4,7 +4,7 @@
 - Modbus RTU: 연속운전, 속도/가감속 설정
 - P1 전용 프로토콜: 절대/상대 좌표 이동, 직선 보간
 - 선형축(5상): 분해능 100 내장, 0.72°/pulse, 5mm 리드, 500pps=5mm → 100 pulse/mm
-- 회전축(2상): 1.8°/pulse, 200pulse/rev, 마이크로스텝5, 기어비90 (분해능 내장)
+- 회전축: 400pulse/모터회전, 기어비90:1 → 스테이지 0.01°/pulse (36,000pulse=1바퀴)
 """
 try:
     from pymodbus.client import ModbusSerialClient
@@ -50,8 +50,12 @@ PULSE_PER_REV = 500
 MM_PER_REV = 5
 PULSE_PER_MM = 100
 
-# 회전축(2상): 1.8°/pulse, 200pulse/rev, 마이크로스텝5·기어비90 기기 내장
-ROTATE_DEG_PER_PULSE = 1.8
+# 회전축: 드라이버 입력 400pulse = 모터 1회전, 기어비 90:1
+# 스테이지 1회전(360°) = 400 × 90 = 36,000 pulse
+# → 스테이지 기준 0.01°/pulse
+ROTATE_PULSE_PER_MOTOR_REV = 400
+ROTATE_GEAR_RATIO = 90
+ROTATE_DEG_PER_PULSE = 360.0 / (ROTATE_PULSE_PER_MOTOR_REV * ROTATE_GEAR_RATIO)  # = 0.01°/pulse
 
 # Backward-compat alias: 회전 관련 기존 코드에서 참조
 STEP_ANGLE = ROTATE_DEG_PER_PULSE
