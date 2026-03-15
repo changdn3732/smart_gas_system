@@ -50,12 +50,9 @@ PULSE_PER_REV = 500
 MM_PER_REV = 5
 PULSE_PER_MM = 1000
 
-# 회전축: 드라이버 입력 400pulse = 모터 1회전, 기어비 90:1
-# 스테이지 1회전(360°) = 400 × 90 = 36,000 pulse
-# → 스테이지 기준 0.01°/pulse
-ROTATE_PULSE_PER_MOTOR_REV = 400
-ROTATE_GEAR_RATIO = 90
-ROTATE_DEG_PER_PULSE = 360.0 / (ROTATE_PULSE_PER_MOTOR_REV * ROTATE_GEAR_RATIO)  # = 0.01°/pulse
+# 회전축: 실측 보정값 — 600PPS×10s=480° 기준
+# 0.08°/commanded_pulse (기어비·마이크로스텝 포함 실효값)
+ROTATE_DEG_PER_PULSE = 0.08  # °/pulse (실측: 480deg / (600pps × 10s))
 
 # Backward-compat alias: 회전 관련 기존 코드에서 참조
 STEP_ANGLE = ROTATE_DEG_PER_PULSE
@@ -586,36 +583,41 @@ class MotorController:
         self.connected = False
 
     def _initialize_drivers(self):
-        """연결 직후 속도 배율을 1로 초기화 + readback 검증."""
+        """연결 직후 파라미터 초기화 + readback 검증.
+        - speed_ratio = 1 : 속도 배율 초기화
+        - start_speed  = 1 : 최소 기동속도를 1PPS로 낮춰 저속 명령이 무시되지 않도록
+        """
+        INIT_PARAMS = [
+            ('speed_ratio', 1),
+            ('start_speed', 1),
+        ]
         for drv in (self.driver1, self.driver2):
             for axis, regs in [(MotorAxis.X, X_REGISTERS), (MotorAxis.Y, Y_REGISTERS)]:
-                addr = regs['speed_ratio']
-                # write
-                try:
-                    r = self.client.write_register(
-                        address=addr, value=1, **{_SLAVE_KW: drv.slave_id}
+                for param_name, param_val in INIT_PARAMS:
+                    if param_name not in regs:
+                        continue
+                    addr = regs[param_name]
+                    try:
+                        r = self.client.write_register(
+                            address=addr, value=param_val, **{_SLAVE_KW: drv.slave_id}
+                        )
+                        write_ok = not r.isError()
+                    except Exception as e:
+                        write_ok = False
+                        drv.log(f"{param_name} write error: {e}")
+                    try:
+                        rb = self.client.read_holding_registers(
+                            address=addr, count=1, **{_SLAVE_KW: drv.slave_id}
+                        )
+                        actual = rb.registers[0] if hasattr(rb, 'registers') else '?'
+                    except Exception as e:
+                        actual = f'err({e})'
+                    drv.log(
+                        f"init drv={drv.slave_id} axis={axis.value} "
+                        f"{param_name}={param_val} write={'OK' if write_ok else 'FAIL'} "
+                        f"readback={actual}"
                     )
-                    write_ok = not r.isError()
-                except Exception as e:
-                    write_ok = False
-                    drv.log(f"speed_ratio write error: axis={axis.value} {e}")
-                # readback
-                try:
-                    rb = self.client.read_holding_registers(
-                        address=addr, count=1, **{_SLAVE_KW: drv.slave_id}
-                    )
-                    if hasattr(rb, 'registers'):
-                        actual = rb.registers[0]
-                    else:
-                        actual = '?'
-                except Exception as e:
-                    actual = f'err({e})'
-                drv.log(
-                    f"speed_ratio drv={drv.slave_id} axis={axis.value} "
-                    f"addr=0x{addr:04X} write={'OK' if write_ok else 'FAIL'} "
-                    f"readback={actual}"
-                )
-        self.log("드라이버 초기화 완료 (speed_ratio readback 확인됨)")
+        self.log("드라이버 초기화 완료 (speed_ratio=1, start_speed=1)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
