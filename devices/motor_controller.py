@@ -52,7 +52,7 @@ PULSE_PER_MM = 1000
 
 # 회전축: 실측 보정값 — 600PPS×10s=480° 기준
 # 0.08°/commanded_pulse (기어비·마이크로스텝 포함 실효값)
-ROTATE_DEG_PER_PULSE = 0.08  # °/pulse (실측: 480deg / (600pps × 10s))
+ROTATE_DEG_PER_PULSE = 0.686  # °/pulse (실측: 1rpm 명령 시 7초에 360° → 51.4°/s ÷ 75PPS)
 
 # Backward-compat alias: 회전 관련 기존 코드에서 참조
 STEP_ANGLE = ROTATE_DEG_PER_PULSE
@@ -370,6 +370,9 @@ class PMC2HSPDriver:
     def move_with_speed(self, axis: MotorAxis, direction: MotorDirection,
                         speed: int) -> bool:
         self.log(f"move_with_speed: axis={axis.value} dir={direction.value} speed={speed}PPS")
+        # 속도 레지스터 먼저 기록
+        ok_spd = self.write_drive_speed1(axis, speed)
+        self.log(f"  write_drive_speed1({speed}) → {'OK' if ok_spd else 'FAIL'}")
         ok_sel = self.select_speed(axis, 1)
         self.log(f"  select_speed(1) → {'OK' if ok_sel else 'FAIL'}")
         if not ok_sel:

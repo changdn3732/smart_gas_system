@@ -1196,17 +1196,32 @@ class MotorApp:
         self._manual_spd_val[motor_idx] = e.control.value or '0'
 
     def _apply_manual_speed(self, motor_idx):
-        """Apply 버튼: 속도값 확정 + 동작 중이면 즉시 반영"""
+        """Apply 버튼: 속도값 확정 후 드라이버에 즉시 반영
+        - 정지 중: drive_speed1 레지스터만 미리 기록 (다음 Start 시 사용)
+        - 동작 중: 정지 → 새 속도로 재시작
+        """
         field = self._manual_spd_fields[motor_idx]
         if field:
             self._manual_spd_val[motor_idx] = field.value or '0'
         pps = self._manual_speed_to_pps(motor_idx)
-        print(f"[Manual] Apply motor={MOTOR_IDS[motor_idx]} → {self._manual_spd_val[motor_idx]} = {pps} PPS")
-        if self.motor_running[motor_idx] and self.motor_ctrl and self.motor_ctrl.connected:
-            try:
-                self.motor_ctrl.set_speed_for_motor(MOTOR_IDS[motor_idx], pps)
-            except Exception as ex:
-                print(f"[Manual] Apply speed error: {ex}")
+        motor_id = MOTOR_IDS[motor_idx]
+        print(f"[Manual] Apply motor={motor_id} → {self._manual_spd_val[motor_idx]} = {pps} PPS")
+        if not (self.motor_ctrl and self.motor_ctrl.connected):
+            return
+        try:
+            if self.motor_running[motor_idx]:
+                # 동작 중: 재시작으로 속도 반영
+                direction = self.motor_manual_dir[motor_idx]
+                mapped_dir = self._map_motor_direction(motor_id, direction)
+                self.motor_ctrl.stop_motor(motor_id, immediate=True)
+                self.motor_ctrl.start_motor(motor_id, mapped_dir, pps)
+                print(f"[Manual] Apply: restarted at {pps} PPS")
+            else:
+                # 정지 중: 레지스터만 미리 기록
+                self.motor_ctrl.set_speed_for_motor(motor_id, pps)
+                print(f"[Manual] Apply: pre-wrote drive_speed1={pps} PPS")
+        except Exception as ex:
+            print(f"[Manual] Apply speed error: {ex}")
 
     def _on_speed_dropdown_change(self, e):
         selected = e.control.value
