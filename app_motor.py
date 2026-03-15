@@ -103,6 +103,7 @@ class MotorApp:
         self._manual_spd_val = ['10', '1', '10', '1']
         # 수동 모드: 모터별 속도 입력 TextField 참조
         self._manual_spd_fields = [None, None, None, None]
+        self._manual_dir_btns   = [None, None, None, None]
         # 수동 모드: 모터별 Start/Stop 버튼 참조
         self._manual_startstop_btns = [None, None, None, None]
         self.speed_unit = "mm/s"  # "mm/s", "cm/s", "m/s"
@@ -1303,10 +1304,10 @@ class MotorApp:
         row_c = self._motor_rows[motor_idx]
         btn = self._manual_startstop_btns[motor_idx]
         if lbl:
-            lbl.color = "#00E676" if active else "#333333"
+            lbl.color = "#00E676" if active else "#e0e0e0"
             lbl.value = f"● {MOTOR_LABELS[motor_idx]}" if active else MOTOR_LABELS[motor_idx]
         if row_c:
-            row_c.bgcolor = "rgba(0,230,118,0.12)" if active else "transparent"
+            row_c.bgcolor = "rgba(0,230,118,0.12)" if active else "#2e3d4f"
         if btn:
             btn.text = "Stop" if active else "Start"
             btn.bgcolor = "#f44336" if active else "#4CAF50"
@@ -1471,16 +1472,23 @@ class MotorApp:
             self._manual_motor_start(motor_idx, direction)
 
     def _manual_dir_toggle(self, motor_idx):
-        """방향 토글 (모터 정지 상태에서만)"""
+        """방향 토글 (모터 정지 상태에서만) — 해당 버튼 텍스트만 업데이트"""
         if self.motor_running[motor_idx]:
             return
+        DIR_LABELS = {'+': '▲ Up', '-': '▼ Down', 'CW': '↻ CW', 'CCW': '↺ CCW'}
         mt = MOTOR_TYPES[motor_idx]
         if mt == 'linear':
             self.motor_manual_dir[motor_idx] = '-' if self.motor_manual_dir[motor_idx] == '+' else '+'
         else:
             self.motor_manual_dir[motor_idx] = 'CCW' if self.motor_manual_dir[motor_idx] == 'CW' else 'CW'
-        self._render_schedule()
-        self.page.update()
+        # 해당 방향 버튼 텍스트만 갱신 (전체 재렌더링 안 함)
+        lbl_ctrl = self._manual_dir_btns[motor_idx]
+        if lbl_ctrl:
+            lbl_ctrl.value = DIR_LABELS.get(self.motor_manual_dir[motor_idx], '')
+        try:
+            self.page.update()
+        except Exception:
+            pass
 
     def _render_manual_mode(self):
         DIR_LABELS = {'+': '▲ Up', '-': '▼ Down', 'CW': '↻ CW', 'CCW': '↺ CCW'}
@@ -1491,7 +1499,7 @@ class MotorApp:
             is_active = self.motor_running[mi]
 
             # 모터 이름 레이블
-            lbl_color = "#00E676" if is_active else "#ffffff"
+            lbl_color = "#00E676" if is_active else "#e0e0e0"
             lbl_text  = f"● {MOTOR_LABELS[mi]}" if is_active else MOTOR_LABELS[mi]
             label = ft.Text(lbl_text, size=12, weight=ft.FontWeight.BOLD,
                             color=lbl_color, width=100)
@@ -1509,14 +1517,16 @@ class MotorApp:
 
             # 방향 버튼
             cur_dir = self.motor_manual_dir[mi]
+            dir_lbl_ctrl = ft.Text(DIR_LABELS.get(cur_dir, cur_dir), size=11,
+                                   color="#ffffff", text_align=ft.TextAlign.CENTER)
             dir_btn = ft.Container(
-                content=ft.Text(DIR_LABELS.get(cur_dir, cur_dir), size=11,
-                                color="#ffffff", text_align=ft.TextAlign.CENTER),
+                content=dir_lbl_ctrl,
                 width=70, height=36, bgcolor="#607D8B", border_radius=6,
                 alignment=ft.Alignment(0, 0),
                 on_click=lambda e, i=mi: self._manual_dir_toggle(i),
                 tooltip="클릭하여 방향 전환",
             )
+            self._manual_dir_btns[mi] = dir_lbl_ctrl
 
             # Apply 버튼
             apply_btn = ft.ElevatedButton(
@@ -1535,7 +1545,7 @@ class MotorApp:
             )
             self._manual_startstop_btns[mi] = ss_btn
 
-            row_bg = "rgba(0,230,118,0.10)" if is_active else "#1e2a3a"
+            row_bg = "rgba(0,230,118,0.12)" if is_active else "#2e3d4f"
             row_container = ft.Container(
                 content=ft.Row(
                     [label, spd_field, apply_btn, dir_btn, ss_btn],
@@ -1543,6 +1553,7 @@ class MotorApp:
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 bgcolor=row_bg, border_radius=8, padding=ft.padding.symmetric(horizontal=8, vertical=6),
+                border=ft.border.all(1, "#3d5166"),
             )
             self._motor_rows[mi] = row_container
             self.schedule_content.controls.append(row_container)
