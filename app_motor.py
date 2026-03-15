@@ -82,8 +82,6 @@ class MotorApp:
         self.home_angle = {'upper': 0.0, 'lower': 0.0}
         self._homing = False
         self._graph_loop_running = False
-        self._limit_alarm_triggered = False
-        self._limit_alarm_dialog = None
         self._load_home()
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
@@ -120,15 +118,12 @@ class MotorApp:
             self.home_angle = data.get('home_angle', {'upper': 0.0, 'lower': 0.0})
             self.stage_gap = data.get('stage_gap', STAGE_GAP_MM)
 
-            for k in ('upper', 'lower'):
-                self.home_z[k] = max(0, min(MAX_TRAVEL_MM, self.home_z.get(k, 0)))
-
             # 마지막 위치 복원 (없으면 홈 위치로)
             last_z = data.get('last_z', self.home_z)
             last_angle = data.get('last_angle', self.home_angle)
             self.cur_z = {
-                'upper': max(0, min(MAX_TRAVEL_MM, last_z.get('upper', self.home_z['upper']))),
-                'lower': max(0, min(MAX_TRAVEL_MM, last_z.get('lower', self.home_z['lower']))),
+                'upper': last_z.get('upper', self.home_z['upper']),
+                'lower': last_z.get('lower', self.home_z['lower']),
             }
             self.cur_angle = {
                 'upper': last_angle.get('upper', self.home_angle['upper']),
@@ -138,58 +133,6 @@ class MotorApp:
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             pass
 
-    def _check_stage_limits(self) -> tuple[bool, str]:
-        """스테이지 위치가 0~MAX_TRAVEL_MM 범위 내인지 확인. (ok, msg) 반환."""
-        for key, label in [('upper', '상부'), ('lower', '하부')]:
-            z = self.cur_z[key]
-            if z < 0:
-                return False, f"{label} 스테이지 하한 초과 ({z:.1f}mm < 0mm)"
-            if z > MAX_TRAVEL_MM:
-                return False, f"{label} 스테이지 상한 초과 ({z:.1f}mm > {MAX_TRAVEL_MM:.0f}mm)"
-        return True, ""
-
-    def _trigger_limit_alarm(self, msg: str):
-        """범위 초과 시 모든 모터 정지 + 알람 다이얼로그"""
-        if self._limit_alarm_triggered:
-            return
-        self._limit_alarm_triggered = True
-        self.schedule_running = False
-        self._homing = False
-        for i in range(4):
-            self.motor_running[i] = False
-            self._highlight_motor(i, False)
-        if self.motor_ctrl and self.motor_ctrl.connected:
-            self.motor_ctrl.stop_all(immediate=False)
-        for k in ('upper', 'lower'):
-            self.cur_z[k] = max(0, min(MAX_TRAVEL_MM, self.cur_z[k]))
-        if hasattr(self, '_status_text') and self._status_text:
-            self._status_text.value = f"⚠ 한계 초과: {msg}"
-            self._status_text.color = "#ff0000"
-        if hasattr(self, 'start_btn') and self.start_btn:
-            self.start_btn.text = "Start"
-        self._update_all_graphs()
-        if hasattr(self, 'page') and self.page:
-            self._limit_alarm_dialog = ft.AlertDialog(
-                modal=True,
-                title=ft.Text("스테이지 한계 초과", color="#ff0000", weight=ft.FontWeight.BOLD),
-                content=ft.Text(f"{msg}\n\n모든 모터가 정지되었습니다.", size=14),
-                on_dismiss=lambda e: setattr(self, '_limit_alarm_triggered', False),
-            )
-            self.page.overlay.append(self._limit_alarm_dialog)
-            self._limit_alarm_dialog.open = True
-            self.page.update()
-
-    def _would_exceed_limit(self, motor_idx: int, direction: str) -> bool:
-        """해당 방향 이동 시 한계 초과 여부 (수동 조작 전 체크용)"""
-        if MOTOR_TYPES[motor_idx] != 'linear':
-            return False
-        key = 'upper' if motor_idx == 0 else 'lower'
-        z = self.cur_z[key]
-        if direction in ('+', 'plus', 'up'):
-            return z >= MAX_TRAVEL_MM
-        if direction in ('-', 'minus', 'down'):
-            return z <= 0
-        return False
 
     def _save_home(self):
         data = {
@@ -1117,7 +1060,6 @@ class MotorApp:
             self.motor_ctrl.stop_all(immediate=True)
         self._homing = False
         self.schedule_running = False
-        self._limit_alarm_triggered = False  # 알람 플래그 해제 → 이후 한계초과 재감지 가능
         for i in range(4):
             self.motor_running[i] = False
             self._highlight_motor(i, False)
@@ -1313,8 +1255,6 @@ class MotorApp:
 
     def _manual_motor_start(self, motor_idx, direction):
         if self.schedule_running:
-            return
-        if self._would_exceed_limit(motor_idx, direction):
             return
         self._manual_pressed_at[motor_idx] = time.monotonic()
         self.motor_manual_dir[motor_idx] = direction
@@ -1821,10 +1761,6 @@ class MotorApp:
                 sign = -1 if d in ('-', 'minus', 'down') else 1
                 self.cur_z[key] += sign * mm_per_sec * dt
 
-        ok, msg = self._check_stage_limits()
-        if not ok:
-            self._trigger_limit_alarm(msg)
-
         for mi, key in [(1, 'upper'), (3, 'lower')]:
             if self.motor_running[mi] or (self.schedule_running and self.history[mi]):
                 spd_pps = 0
@@ -2048,11 +1984,6 @@ class MotorApp:
                     while elapsed < dur_sec and self.schedule_running:
                         if time.monotonic() - start_time >= total_sec:
                             break
-                        if motor_id in ('upper_stage', 'lower_stage'):
-                            est_z = start_z + (elapsed / dur_sec) * delta_mm
-                            if est_z < 0 or est_z > MAX_TRAVEL_MM:
-                                limit_hit = True
-                                break
                         chunk = min(0.1, dur_sec - elapsed)
                         await asyncio.sleep(chunk)
                         elapsed += chunk
@@ -2060,26 +1991,13 @@ class MotorApp:
                     if not self.schedule_running or time.monotonic() - start_time >= total_sec:
                         return
                     if motor_id == 'upper_stage':
-                        actual_delta = (elapsed / dur_sec) * delta_mm if limit_hit else delta_mm
-                        self.cur_z['upper'] += actual_delta
+                        self.cur_z['upper'] += delta_mm
                     elif motor_id == 'lower_stage':
-                        actual_delta = (elapsed / dur_sec) * delta_mm if limit_hit else delta_mm
-                        self.cur_z['lower'] += actual_delta
+                        self.cur_z['lower'] += delta_mm
                     elif motor_id == 'upper_rotate':
-                        # 회전도 배율 제거한 실제 각도로 추적
                         self.cur_angle['upper'] += (delta_pulse / pulse_mult) * STEP_ANGLE
                     else:
                         self.cur_angle['lower'] += (delta_pulse / pulse_mult) * STEP_ANGLE
-                    if limit_hit:
-                        self.schedule_running = False
-                        ok, msg = self._check_stage_limits()
-                        self._trigger_limit_alarm(msg or "스테이지 한계 초과")
-                        return
-                    ok, msg = self._check_stage_limits()
-                    if not ok:
-                        self.schedule_running = False
-                        self._trigger_limit_alarm(msg)
-                        return
                 except Exception as ex:
                     print(f"[Schedule] {motor_id} seg{j} error: {ex}")
                     await asyncio.sleep(dur_sec)
