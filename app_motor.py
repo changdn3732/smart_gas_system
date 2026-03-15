@@ -88,9 +88,9 @@ class MotorApp:
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
         self.manual_speeds = [
-            {"label": "slow",      "pps": 500},    # 0.5 mm/s
-            {"label": "medium",    "pps": 2000},   # 2 mm/s
-            {"label": "fast",      "pps": 10000},  # 10 mm/s
+            {"label": "slow",      "pps": 500},
+            {"label": "medium",    "pps": 2000},
+            {"label": "fast",      "pps": 10000},
         ]
         self.speed_mode_idx = 0
         self._last_applied_manual_speed_pps = None
@@ -99,6 +99,12 @@ class MotorApp:
         self.motor_manual_dir = ['+', 'CW', '+', 'CW']
         self._motor_labels = [None, None, None, None]
         self._motor_rows = [None, None, None, None]
+        # 수동 모드: 모터별 속도 입력값 (linear: mm/s, rotate: rpm)
+        self._manual_spd_val = ['10', '1', '10', '1']
+        # 수동 모드: 모터별 속도 입력 TextField 참조
+        self._manual_spd_fields = [None, None, None, None]
+        # 수동 모드: 모터별 Start/Stop 버튼 참조
+        self._manual_startstop_btns = [None, None, None, None]
         self.speed_unit = "mm/s"  # "mm/s", "cm/s", "m/s"
 
     # ──────────────────────────────────────────────
@@ -1184,6 +1190,10 @@ class MotorApp:
         self._render_schedule()
         self.page.update()
 
+    def _on_manual_spd_change(self, e, motor_idx):
+        """수동 모드 모터별 속도 입력 변경"""
+        self._manual_spd_val[motor_idx] = e.control.value or '0'
+
     def _on_speed_dropdown_change(self, e):
         selected = e.control.value
         for i, s in enumerate(self.manual_speeds):
@@ -1212,6 +1222,20 @@ class MotorApp:
                 direction = "+"
         return DIRECTION_MAP.get(direction, 'plus')
 
+    def _manual_speed_to_pps(self, motor_idx) -> int:
+        """수동 모드 속도 입력값 → PPS 변환"""
+        try:
+            val = float(self._manual_spd_val[motor_idx])
+        except (ValueError, TypeError):
+            val = 0.0
+        if val <= 0:
+            return 1
+        mt = MOTOR_TYPES[motor_idx]
+        if mt == 'linear':
+            return min(self.MAX_PPS, max(1, int(val * PULSE_PER_MM)))
+        else:
+            return min(self.MAX_PPS, max(1, int(val * 360.0 / 60.0 / STEP_ANGLE)))
+
     def _manual_motor_start(self, motor_idx, direction):
         if self.schedule_running:
             return
@@ -1219,8 +1243,8 @@ class MotorApp:
             return
         self._manual_pressed_at[motor_idx] = time.monotonic()
         self.motor_manual_dir[motor_idx] = direction
+        speed = self._manual_speed_to_pps(motor_idx)
         if self.motor_ctrl and self.motor_ctrl.connected:
-            speed = self.manual_speeds[self.speed_mode_idx]["pps"]
             motor_id = MOTOR_IDS[motor_idx]
             mapped_dir = self._map_motor_direction(motor_id, direction)
             print(f"[Manual] START motor={motor_id} dir={mapped_dir} speed={speed}PPS")
@@ -1233,7 +1257,6 @@ class MotorApp:
             except Exception as ex:
                 print(f"Manual start error: {ex}")
         else:
-            # Keep simulator-like behavior while disconnected.
             self.motor_running[motor_idx] = True
             self._highlight_motor(motor_idx, True)
 
@@ -1265,11 +1288,15 @@ class MotorApp:
     def _highlight_motor(self, motor_idx, active):
         lbl = self._motor_labels[motor_idx]
         row_c = self._motor_rows[motor_idx]
+        btn = self._manual_startstop_btns[motor_idx]
         if lbl:
             lbl.color = "#00E676" if active else "#333333"
             lbl.value = f"● {MOTOR_LABELS[motor_idx]}" if active else MOTOR_LABELS[motor_idx]
         if row_c:
             row_c.bgcolor = "rgba(0,230,118,0.12)" if active else "transparent"
+        if btn:
+            btn.text = "Stop" if active else "Start"
+            btn.bgcolor = "#f44336" if active else "#4CAF50"
         try:
             self.page.update()
         except Exception:
@@ -1420,41 +1447,82 @@ class MotorApp:
         self.schedule_content.controls.append(
             ft.Row([estop_btn], alignment=ft.MainAxisAlignment.CENTER))
 
+    def _manual_toggle(self, motor_idx):
+        """Start/Stop 토글"""
+        if self.schedule_running:
+            return
+        if self.motor_running[motor_idx]:
+            self._do_manual_stop(motor_idx)
+        else:
+            direction = self.motor_manual_dir[motor_idx]
+            self._manual_motor_start(motor_idx, direction)
+
+    def _manual_dir_toggle(self, motor_idx):
+        """방향 토글 (모터 정지 상태에서만)"""
+        if self.motor_running[motor_idx]:
+            return
+        mt = MOTOR_TYPES[motor_idx]
+        if mt == 'linear':
+            self.motor_manual_dir[motor_idx] = '-' if self.motor_manual_dir[motor_idx] == '+' else '+'
+        else:
+            self.motor_manual_dir[motor_idx] = 'CCW' if self.motor_manual_dir[motor_idx] == 'CW' else 'CW'
+        self._render_schedule()
+        self.page.update()
+
     def _render_manual_mode(self):
-        self._speed_dropdown = ft.Dropdown(
-            width=200, value=self.manual_speeds[self.speed_mode_idx]["label"],
-            text_size=14, dense=True,
-            options=[ft.DropdownOption(s["label"]) for s in self.manual_speeds],
-            on_select=lambda e: self._on_speed_dropdown_change(e),
-        )
-        self.schedule_content.controls.append(
-            ft.Row([ft.Text("Speed:", size=14, weight=ft.FontWeight.BOLD),
-                    self._speed_dropdown],
-                   alignment=ft.MainAxisAlignment.CENTER))
-        self.schedule_content.controls.append(ft.Container(height=10))
+        DIR_LABELS = {'+': '▲ Up', '-': '▼ Down', 'CW': '↻ CW', 'CCW': '↺ CCW'}
+        SPD_UNITS  = {0: 'mm/s', 1: 'rpm', 2: 'mm/s', 3: 'rpm'}
 
         for mi in range(4):
             mt = MOTOR_TYPES[mi]
-            if mt == 'linear':
-                dirs = [('+', '+'), ('-', '-')]
-            else:
-                dirs = [('CW', 'CW'), ('CCW', 'CCW')]
-
             is_active = self.motor_running[mi]
-            lbl_text = f"● {MOTOR_LABELS[mi]}" if is_active else MOTOR_LABELS[mi]
-            lbl_color = "#00E676" if is_active else "#333333"
-            label = ft.Text(lbl_text, size=13, weight=ft.FontWeight.BOLD,
-                            width=110, text_align=ft.TextAlign.RIGHT, color=lbl_color)
-            self._motor_labels[mi] = label
-            btns = [self._make_jog_button(d[0], mi, d[1], width=90, height=50) for d in dirs]
 
-            row_bg = "rgba(0,230,118,0.12)" if is_active else "transparent"
+            # 모터 이름 레이블
+            lbl_color = "#00E676" if is_active else "#ffffff"
+            lbl_text  = f"● {MOTOR_LABELS[mi]}" if is_active else MOTOR_LABELS[mi]
+            label = ft.Text(lbl_text, size=12, weight=ft.FontWeight.BOLD,
+                            color=lbl_color, width=100)
+            self._motor_labels[mi] = label
+
+            # 속도 입력 필드
+            spd_field = ft.TextField(
+                value=self._manual_spd_val[mi],
+                width=80, height=36, text_size=13, dense=True,
+                suffix_text=SPD_UNITS[mi],
+                border_color="#90CAF9",
+                on_change=lambda e, i=mi: self._on_manual_spd_change(e, i),
+            )
+            self._manual_spd_fields[mi] = spd_field
+
+            # 방향 버튼
+            cur_dir = self.motor_manual_dir[mi]
+            dir_btn = ft.Container(
+                content=ft.Text(DIR_LABELS.get(cur_dir, cur_dir), size=11,
+                                color="#ffffff", text_align=ft.TextAlign.CENTER),
+                width=70, height=36, bgcolor="#607D8B", border_radius=6,
+                alignment=ft.Alignment(0, 0),
+                on_click=lambda e, i=mi: self._manual_dir_toggle(i),
+                tooltip="클릭하여 방향 전환",
+            )
+
+            # Start / Stop 버튼
+            btn_text  = "Stop"  if is_active else "Start"
+            btn_color = "#f44336" if is_active else "#4CAF50"
+            ss_btn = ft.ElevatedButton(
+                btn_text, bgcolor=btn_color, color="white",
+                width=70, height=36,
+                on_click=lambda e, i=mi: self._manual_toggle(i),
+            )
+            self._manual_startstop_btns[mi] = ss_btn
+
+            row_bg = "rgba(0,230,118,0.10)" if is_active else "#1e2a3a"
             row_container = ft.Container(
                 content=ft.Row(
-                    [label, ft.Container(width=10)] + btns,
+                    [label, spd_field, dir_btn, ss_btn],
                     alignment=ft.MainAxisAlignment.CENTER, spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                bgcolor=row_bg, border_radius=6, padding=4,
+                bgcolor=row_bg, border_radius=8, padding=ft.padding.symmetric(horizontal=10, vertical=6),
             )
             self._motor_rows[mi] = row_container
             self.schedule_content.controls.append(row_container)
