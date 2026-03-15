@@ -1783,8 +1783,10 @@ class MotorApp:
             cum += dur
         return cur_dir
 
-    # 스케줄 모드 펄스 배율: 선형 스테이지 ×2, 회전 ×6
-    SCHEDULE_PULSE_MULT = {'linear': 2, 'rotate': 6}
+    # 스케줄 모드 펄스 배율 (실측 보정)
+    # 선형: ×2→20mm, 목표25mm → 2×(25/20)=2.5
+    # 회전: ×6→70°, 목표50° → 6×(50/70)≈4.3
+    SCHEDULE_PULSE_MULT = {'linear': 2.5, 'rotate': 4.3}
 
     def _get_relative_segments(self, motor_idx) -> list:
         """상대위치용: (delta_pulse, speed_pps, duration_sec, direction) 리스트"""
@@ -1802,8 +1804,8 @@ class MotorApp:
             d = dd if isinstance(dd, str) else (dd.value if dd else '+')
             if spd <= 0 or dur_sec <= 0:
                 continue
-            # 스케줄 펄스 배율 적용 (선형 ×2, 회전 ×6)
-            spd_actual = min(self.MAX_PPS, spd * pulse_mult)
+            # 스케줄 펄스 배율 적용 (선형 ×2, 회전 ×4.3)
+            spd_actual = min(self.MAX_PPS, int(spd * pulse_mult))
             sign = 1 if d in ('+', 'plus', 'CW', 'cw') else -1
             if MOTOR_IDS[motor_idx] == 'upper_stage':
                 sign *= -1  # 상부 스테이지 방향 반전
