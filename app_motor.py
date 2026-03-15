@@ -1191,8 +1191,21 @@ class MotorApp:
         self.page.update()
 
     def _on_manual_spd_change(self, e, motor_idx):
-        """수동 모드 모터별 속도 입력 변경"""
+        """수동 모드 모터별 속도 입력 변경 (입력 중 임시 저장만)"""
         self._manual_spd_val[motor_idx] = e.control.value or '0'
+
+    def _apply_manual_speed(self, motor_idx):
+        """Apply 버튼: 속도값 확정 + 동작 중이면 즉시 반영"""
+        field = self._manual_spd_fields[motor_idx]
+        if field:
+            self._manual_spd_val[motor_idx] = field.value or '0'
+        pps = self._manual_speed_to_pps(motor_idx)
+        print(f"[Manual] Apply motor={MOTOR_IDS[motor_idx]} → {self._manual_spd_val[motor_idx]} = {pps} PPS")
+        if self.motor_running[motor_idx] and self.motor_ctrl and self.motor_ctrl.connected:
+            try:
+                self.motor_ctrl.set_speed_for_motor(MOTOR_IDS[motor_idx], pps)
+            except Exception as ex:
+                print(f"[Manual] Apply speed error: {ex}")
 
     def _on_speed_dropdown_change(self, e):
         selected = e.control.value
@@ -1505,12 +1518,19 @@ class MotorApp:
                 tooltip="클릭하여 방향 전환",
             )
 
+            # Apply 버튼
+            apply_btn = ft.ElevatedButton(
+                "Apply", bgcolor="#1565C0", color="white",
+                width=65, height=36,
+                on_click=lambda e, i=mi: self._apply_manual_speed(i),
+            )
+
             # Start / Stop 버튼
             btn_text  = "Stop"  if is_active else "Start"
             btn_color = "#f44336" if is_active else "#4CAF50"
             ss_btn = ft.ElevatedButton(
                 btn_text, bgcolor=btn_color, color="white",
-                width=70, height=36,
+                width=65, height=36,
                 on_click=lambda e, i=mi: self._manual_toggle(i),
             )
             self._manual_startstop_btns[mi] = ss_btn
@@ -1518,11 +1538,11 @@ class MotorApp:
             row_bg = "rgba(0,230,118,0.10)" if is_active else "#1e2a3a"
             row_container = ft.Container(
                 content=ft.Row(
-                    [label, spd_field, dir_btn, ss_btn],
-                    alignment=ft.MainAxisAlignment.CENTER, spacing=8,
+                    [label, spd_field, apply_btn, dir_btn, ss_btn],
+                    alignment=ft.MainAxisAlignment.CENTER, spacing=6,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                bgcolor=row_bg, border_radius=8, padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                bgcolor=row_bg, border_radius=8, padding=ft.padding.symmetric(horizontal=8, vertical=6),
             )
             self._motor_rows[mi] = row_container
             self.schedule_content.controls.append(row_container)
