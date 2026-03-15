@@ -45,10 +45,10 @@ CMD_GAP_SEC = 0.05
 
 # ==================== 상수 정의 ====================
 
-# 선형축(5상 스테이지): 500pps=5mm, 분해능 기기 내장
+# 선형축(5상 스테이지): 분해능 내장, 10,000 pulse = 1 mm (0.0001 mm/pulse)
 PULSE_PER_REV = 500
 MM_PER_REV = 5
-PULSE_PER_MM = 100
+PULSE_PER_MM = 10000
 
 # 회전축: 드라이버 입력 400pulse = 모터 1회전, 기어비 90:1
 # 스테이지 1회전(360°) = 400 × 90 = 36,000 pulse
@@ -268,7 +268,7 @@ class PMC2HSPDriver:
             return None
 
     def set_speed(self, axis: MotorAxis, speed: int, speed_num: int = 1) -> bool:
-        if speed < 1 or speed > 8000:
+        if speed < 1 or speed > 500000:
             return False
         registers = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
         speed_key = f'drive_speed{speed_num}'
@@ -277,13 +277,13 @@ class PMC2HSPDriver:
         return self._write_register(registers[speed_key], speed)
 
     def set_accel(self, axis: MotorAxis, accel: int) -> bool:
-        if accel < 1 or accel > 8000:
+        if accel < 1 or accel > 500000:
             return False
         registers = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
         return self._write_register(registers['accel'], accel)
 
     def set_decel(self, axis: MotorAxis, decel: int) -> bool:
-        if decel < 1 or decel > 8000:
+        if decel < 1 or decel > 500000:
             return False
         registers = X_REGISTERS if axis == MotorAxis.X else Y_REGISTERS
         return self._write_register(registers['decel'], decel)
@@ -442,9 +442,9 @@ class PMC2HSPDriver:
             return False
 
     def set_speed_p1(self, axis: int, x_speed: int = 1000, y_speed: int = 1000) -> bool:
-        """61H: P1 속도 설정 (1~8000)"""
-        x_speed = max(1, min(8000, x_speed))
-        y_speed = max(1, min(8000, y_speed))
+        """61H: P1 속도 설정"""
+        x_speed = max(1, min(500000, x_speed))
+        y_speed = max(1, min(500000, y_speed))
         data = bytes([P1_SPEED_SET, axis]) \
                + x_speed.to_bytes(2, 'big') \
                + y_speed.to_bytes(2, 'big')
@@ -765,8 +765,8 @@ class MotorController:
         return self.move_relative_modbus_p1(motor_id, delta_pulse, speed)
 
     def _write_p1_speed_modbus(self, drv, speed: int) -> bool:
-        """P1 61H: Modbus로 X/Y축 속도 설정 (1~8000)"""
-        clamped = min(max(1, speed), 8000)
+        """P1 61H: Modbus로 X/Y축 속도 설정"""
+        clamped = min(max(1, speed), 500000)
         ax = P1_AXIS_XY  # X,Y 둘 다 동일 속도로 설정
         regs = [(P1_SPEED_SET << 8) | ax, clamped, clamped]  # 3 registers
         try:
@@ -787,7 +787,7 @@ class MotorController:
         if not self.connected or not self.client:
             return False
         drv, axis = self._get_driver_axis(motor_id)
-        clamped = min(max(1, speed), 8000)
+        clamped = min(max(1, speed), 500000)
         # P0 drive_speed1 + select_speed (연속운전과 동일, P1도 이 속도 사용 가능)
         drv.write_drive_speed1(axis, clamped)
         time.sleep(CMD_GAP_SEC)

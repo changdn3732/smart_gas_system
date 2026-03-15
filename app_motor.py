@@ -88,9 +88,9 @@ class MotorApp:
 
         self.motor_mode = "schedule"  # "schedule" or "manual"
         self.manual_speeds = [
-            {"label": "very slow", "pps": 5},
-            {"label": "slow", "pps": 50},
-            {"label": "fast", "pps": 300},
+            {"label": "slow",      "pps": 5000},    # 0.5 mm/s
+            {"label": "medium",    "pps": 20000},   # 2 mm/s
+            {"label": "fast",      "pps": 100000},  # 10 mm/s
         ]
         self.speed_mode_idx = 0
         self._last_applied_manual_speed_pps = None
@@ -1101,7 +1101,7 @@ class MotorApp:
         self._render_schedule()
         self.page.update()
 
-    MAX_PPS = 8000
+    MAX_PPS = 500000
 
     def _speed_to_pps(self, val: float) -> int:
         """사용자 입력 속도(mm/s, cm/s, m/s) → pps 변환 (최대 8000pps)"""
@@ -1787,7 +1787,7 @@ class MotorApp:
     # 스케줄 모드 펄스 배율 (실측 보정)
     # 선형: ×2→20mm, 목표25mm → 2×(25/20)=2.5
     # 회전: ×6→70°, 목표50° → 6×(50/70)≈4.3
-    SCHEDULE_PULSE_MULT = {'linear': 2.5, 'rotate': 1.0}
+    SCHEDULE_PULSE_MULT = {'linear': 1.0, 'rotate': 1.0}
 
     def _get_relative_segments(self, motor_idx) -> list:
         """상대위치용: (delta_pulse, speed_pps, duration_sec, direction) 리스트"""
