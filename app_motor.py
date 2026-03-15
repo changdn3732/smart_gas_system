@@ -97,14 +97,14 @@ class MotorApp:
         self.motor_manual_dir = ['+', 'CW', '+', 'CW']
         self._motor_labels = [None, None, None, None]
         self._motor_rows = [None, None, None, None]
-        # 수동 모드: 모터별 속도 입력값 (linear: mm/s, rotate: rpm)
-        self._manual_spd_val = ['10', '1', '10', '1']
+        # 수동 모드: 모터별 속도 입력값 (linear: mm/h, rotate: rpm)
+        self._manual_spd_val = ['1', '1', '1', '1']  # linear 기본 1 mm/h
         # 수동 모드: 모터별 속도 입력 TextField 참조
         self._manual_spd_fields = [None, None, None, None]
         self._manual_dir_btns   = [None, None, None, None]
         # 수동 모드: 모터별 Start/Stop 버튼 참조
         self._manual_startstop_btns = [None, None, None, None]
-        self.speed_unit = "mm/s"  # "mm/s", "cm/s", "m/s"
+        self.speed_unit = "mm/s"  # 스케줄 모드용 (메뉴얼 linear는 mm/h)
 
     # ──────────────────────────────────────────────
     # Home position persistence
@@ -1180,8 +1180,18 @@ class MotorApp:
         self.page.update()
 
     def _on_manual_spd_change(self, e, motor_idx):
-        """수동 모드 모터별 속도 입력 변경 (입력 중 임시 저장만)"""
+        """수동 모드 모터별 속도 입력 변경 (TextField용, 레거시)"""
         self._manual_spd_val[motor_idx] = e.control.value or '0'
+
+    def _sync_manual_spd_from_cell(self, motor_idx):
+        """수동 모드 키입력기(numpad) 확인 시 셀값 → _manual_spd_val 동기화"""
+        cell = self._manual_spd_fields[motor_idx]
+        if cell:
+            self._manual_spd_val[motor_idx] = cell.value or '0'
+        try:
+            self.page.update()
+        except Exception:
+            pass
 
     def _apply_manual_speed(self, motor_idx):
         """Apply 버튼: 속도값 확정 후 드라이버에 즉시 반영
@@ -1240,7 +1250,7 @@ class MotorApp:
         return DIRECTION_MAP.get(direction, 'plus')
 
     def _manual_speed_to_pps(self, motor_idx) -> int:
-        """수동 모드 속도 입력값 → PPS 변환"""
+        """수동 모드 속도 입력값 → PPS 변환. linear: mm/h, rotate: rpm. PPS 1미만이면 모터 미동작 → min 1"""
         try:
             val = float(self._manual_spd_val[motor_idx])
         except (ValueError, TypeError):
@@ -1249,7 +1259,9 @@ class MotorApp:
             return 1
         mt = MOTOR_TYPES[motor_idx]
         if mt == 'linear':
-            return min(self.MAX_PPS, max(1, int(val * PULSE_PER_MM)))
+            # mm/h → mm/s → PPS. 1 mm/h = 1/3600 mm/s
+            pps = val / 3600.0 * PULSE_PER_MM
+            return min(self.MAX_PPS, max(1, int(round(pps))))
         else:
             return min(self.MAX_PPS, max(1, int(val * 360.0 / 60.0 / STEP_ANGLE)))
 
@@ -1493,7 +1505,7 @@ class MotorApp:
 
     def _render_manual_mode(self):
         DIR_LABELS = {'+': '▲ Up', '-': '▼ Down', 'CW': '↻ CW', 'CCW': '↺ CCW'}
-        SPD_UNITS  = {0: 'mm/s', 1: 'rpm', 2: 'mm/s', 3: 'rpm'}
+        SPD_UNITS  = {0: 'mm/h', 1: 'rpm', 2: 'mm/h', 3: 'rpm'}
 
         for mi in range(4):
             mt = MOTOR_TYPES[mi]
@@ -1506,15 +1518,17 @@ class MotorApp:
                             color=lbl_color, width=100)
             self._motor_labels[mi] = label
 
-            # 속도 입력 필드
-            spd_field = ft.TextField(
-                value=self._manual_spd_val[mi],
-                width=95, height=36, text_size=13, dense=True,
-                suffix=ft.Text(SPD_UNITS[mi], size=11, color="#90CAF9"),
-                border_color="#90CAF9",
-                on_change=lambda e, i=mi: self._on_manual_spd_change(e, i),
+            # 속도 입력 필드 (스케줄과 동일한 키입력기 사용)
+            spd_cell = self._make_table_input(
+                value=self._manual_spd_val[mi], w=95, h=36,
+                on_change=lambda e, i=mi: self._sync_manual_spd_from_cell(i),
             )
-            self._manual_spd_fields[mi] = spd_field
+            spd_cell.border = ft.border.all(1, "#90CAF9")
+            spd_unit = ft.Text(SPD_UNITS[mi], size=11, color="#90CAF9")
+            spd_field = ft.Row([spd_cell, spd_unit], spacing=4,
+                               alignment=ft.MainAxisAlignment.CENTER,
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            self._manual_spd_fields[mi] = spd_cell
 
             # 방향 버튼
             cur_dir = self.motor_manual_dir[mi]
