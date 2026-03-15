@@ -1787,7 +1787,7 @@ class MotorApp:
     # 스케줄 모드 펄스 배율 (실측 보정)
     # 선형: ×2→20mm, 목표25mm → 2×(25/20)=2.5
     # 회전: ×6→70°, 목표50° → 6×(50/70)≈4.3
-    SCHEDULE_PULSE_MULT = {'linear': 1.0, 'rotate': 1.0}
+    SCHEDULE_PULSE_MULT = {'linear': 0.476, 'rotate': 0.125}  # 실측 보정: linear 105→50mm, rotate 480→60°
 
     def _get_relative_segments(self, motor_idx) -> list:
         """상대위치용: (delta_pulse, speed_pps, duration_sec, direction) 리스트"""

@@ -377,7 +377,6 @@ class PMC2HSPDriver:
         self.log(f"  select_speed(1) → {'OK' if ok_sel else 'FAIL'}")
         if not ok_sel:
             return False
-        time.sleep(CMD_GAP_SEC)
         ok = self.start_continuous(axis, direction)
         self.log(f"  start_continuous → {'OK' if ok else 'FAIL'}")
         if ok:
@@ -432,7 +431,10 @@ class PMC2HSPDriver:
             ser.reset_input_buffer()
             ser.write(packet)
             self.log(f"P1 TX: {packet.hex(' ').upper()}")
-            time.sleep(0.1)
+            # 응답 수신: 최대 100ms 대기 후 버퍼 읽기
+            deadline = time.monotonic() + 0.1
+            while ser.in_waiting == 0 and time.monotonic() < deadline:
+                pass
             if ser.in_waiting:
                 resp = ser.read(ser.in_waiting)
                 self.log(f"P1 RX: {resp.hex(' ').upper()}")
@@ -588,7 +590,6 @@ class MotorController:
         드라이버에 이전 설정값(≠1)이 남아 있으면 PPS 계산이 틀어지므로
         X/Y 속도 배율 레지스터(0x044E, 0x0460)를 반드시 1로 씀.
         """
-        import time as _t
         for drv in (self.driver1, self.driver2):
             for axis, regs in [(MotorAxis.X, X_REGISTERS), (MotorAxis.Y, Y_REGISTERS)]:
                 addr = regs['speed_ratio']
@@ -600,7 +601,6 @@ class MotorController:
                     drv.log(f"speed_ratio reset: axis={axis.value} addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
                 except Exception as e:
                     drv.log(f"speed_ratio reset error: axis={axis.value} {e}")
-                _t.sleep(CMD_GAP_SEC)
         self.log("드라이버 초기화 완료 (speed_ratio=1 강제 설정)")
 
     def verify_connection(self) -> dict:
@@ -639,10 +639,8 @@ class MotorController:
         for drv in (self.driver1, self.driver2):
             if not drv.write_drive_speed1(MotorAxis.X, speed):
                 ok = False
-            time.sleep(CMD_GAP_SEC)
             if not drv.write_drive_speed1(MotorAxis.Y, speed):
                 ok = False
-            time.sleep(CMD_GAP_SEC)
         return ok
 
     def set_speed_for_motor(self, motor_id: str, speed: int) -> bool:
@@ -650,9 +648,7 @@ class MotorController:
         if not self.connected:
             return False
         drv, axis = self._get_driver_axis(motor_id)
-        ok = drv.write_drive_speed1(axis, speed)
-        time.sleep(CMD_GAP_SEC)
-        return ok
+        return drv.write_drive_speed1(axis, speed)
 
     def start_motor(self, motor_id: str, direction: str, speed: int = 1000) -> bool:
         if not self.connected:
@@ -712,9 +708,7 @@ class MotorController:
         ok = True
         for drv in (self.driver1, self.driver2):
             ok = drv.clear_position_counter(MotorAxis.X) and ok
-            time.sleep(CMD_GAP_SEC)
             ok = drv.clear_position_counter(MotorAxis.Y) and ok
-            time.sleep(CMD_GAP_SEC)
         return ok
 
     def home_return_all(self) -> bool:
@@ -735,7 +729,6 @@ class MotorController:
         ok = True
         for drv in (self.driver1, self.driver2):
             ok = drv.home_return_xy() and ok
-            time.sleep(CMD_GAP_SEC)
         return ok
 
     def move_absolute(self, motor_id: str, target_pulse: int,
@@ -744,11 +737,9 @@ class MotorController:
         if not self.connected:
             return False
         drv, axis = self._get_driver_axis(motor_id)
-        clamped = min(max(1, speed), 8000)
+        clamped = min(max(1, speed), 500000)
         drv.set_speed(axis, clamped, 1)
-        time.sleep(0.03)
         drv.select_speed(axis, 1)
-        time.sleep(0.03)
         if axis == MotorAxis.X:
             return drv.move_absolute_p1(x_pulse=target_pulse, y_pulse=0,
                                         axis=P1_AXIS_X)
@@ -763,15 +754,11 @@ class MotorController:
         if not self.connected:
             return False
         drv = self.driver1 if driver_id == 1 else self.driver2
-        clamped = min(max(1, speed), 8000)
+        clamped = min(max(1, speed), 500000)
         drv.set_speed(MotorAxis.X, clamped, 1)
-        time.sleep(0.02)
         drv.set_speed(MotorAxis.Y, clamped, 1)
-        time.sleep(0.02)
         drv.select_speed(MotorAxis.X, 1)
-        time.sleep(0.02)
         drv.select_speed(MotorAxis.Y, 1)
-        time.sleep(0.02)
         return drv.move_absolute_p1(x_pulse, y_pulse, axis=P1_AXIS_XY)
 
     def move_relative(self, motor_id: str, delta_pulse: int,
@@ -805,12 +792,9 @@ class MotorController:
         clamped = min(max(1, speed), 500000)
         # P0 drive_speed1 + select_speed (연속운전과 동일, P1도 이 속도 사용 가능)
         drv.write_drive_speed1(axis, clamped)
-        time.sleep(CMD_GAP_SEC)
         drv.select_speed(axis, 1)
-        time.sleep(CMD_GAP_SEC)
         # P1 61H 속도 설정
         self._write_p1_speed_modbus(drv, clamped)
-        time.sleep(0.15)
 
         x_delta = delta_pulse if axis == MotorAxis.X else 0
         y_delta = delta_pulse if axis == MotorAxis.Y else 0
@@ -845,7 +829,6 @@ class MotorController:
                 if r.isError():
                     self.log(f"move_relative_modbus_p1 FC06 reg[{i}] FAIL: {r}")
                     return False
-                time.sleep(CMD_GAP_SEC)
             return True
         except Exception as e:
             self.log(f"move_relative_modbus_p1 {motor_id} error: {e}")
@@ -858,15 +841,11 @@ class MotorController:
         if not self.connected:
             return False
         drv = self.driver1 if driver_id == 1 else self.driver2
-        clamped = min(max(1, speed), 8000)
+        clamped = min(max(1, speed), 500000)
         drv.set_speed(MotorAxis.X, clamped, 1)
-        time.sleep(0.02)
         drv.set_speed(MotorAxis.Y, clamped, 1)
-        time.sleep(0.02)
         drv.select_speed(MotorAxis.X, 1)
-        time.sleep(0.02)
         drv.select_speed(MotorAxis.Y, 1)
-        time.sleep(0.02)
         return drv.move_relative_p1(x_delta, y_delta, axis=P1_AXIS_XY)
 
     def get_motor_type(self, motor_id: str) -> str:
