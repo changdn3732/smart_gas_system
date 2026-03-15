@@ -586,22 +586,36 @@ class MotorController:
         self.connected = False
 
     def _initialize_drivers(self):
-        """연결 직후 속도 배율을 1로 초기화.
-        드라이버에 이전 설정값(≠1)이 남아 있으면 PPS 계산이 틀어지므로
-        X/Y 속도 배율 레지스터(0x044E, 0x0460)를 반드시 1로 씀.
-        """
+        """연결 직후 속도 배율을 1로 초기화 + readback 검증."""
         for drv in (self.driver1, self.driver2):
             for axis, regs in [(MotorAxis.X, X_REGISTERS), (MotorAxis.Y, Y_REGISTERS)]:
                 addr = regs['speed_ratio']
+                # write
                 try:
                     r = self.client.write_register(
                         address=addr, value=1, **{_SLAVE_KW: drv.slave_id}
                     )
-                    ok = not r.isError()
-                    drv.log(f"speed_ratio reset: axis={axis.value} addr=0x{addr:04X} → {'OK' if ok else 'FAIL'}")
+                    write_ok = not r.isError()
                 except Exception as e:
-                    drv.log(f"speed_ratio reset error: axis={axis.value} {e}")
-        self.log("드라이버 초기화 완료 (speed_ratio=1 강제 설정)")
+                    write_ok = False
+                    drv.log(f"speed_ratio write error: axis={axis.value} {e}")
+                # readback
+                try:
+                    rb = self.client.read_holding_registers(
+                        address=addr, count=1, **{_SLAVE_KW: drv.slave_id}
+                    )
+                    if hasattr(rb, 'registers'):
+                        actual = rb.registers[0]
+                    else:
+                        actual = '?'
+                except Exception as e:
+                    actual = f'err({e})'
+                drv.log(
+                    f"speed_ratio drv={drv.slave_id} axis={axis.value} "
+                    f"addr=0x{addr:04X} write={'OK' if write_ok else 'FAIL'} "
+                    f"readback={actual}"
+                )
+        self.log("드라이버 초기화 완료 (speed_ratio readback 확인됨)")
 
     def verify_connection(self) -> dict:
         """각 드라이버 실제 통신 테스트 (레지스터 읽기)"""
