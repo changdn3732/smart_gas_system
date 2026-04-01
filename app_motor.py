@@ -104,7 +104,7 @@ class MotorApp:
         self._manual_dir_btns   = [None, None, None, None]
         # 수동 모드: 모터별 Start/Stop 버튼 참조
         self._manual_startstop_btns = [None, None, None, None]
-        self.speed_unit = "mm/s"  # 스케줄 모드용 (메뉴얼 linear는 mm/h)
+        self.speed_unit = "mm/h"  # 스케줄/메뉴얼 linear 공통 단위
 
     # ──────────────────────────────────────────────
     # Home position persistence
@@ -524,11 +524,12 @@ class MotorApp:
             options=self._scan_ports(),
         )
         self._baud_dropdown = ft.Dropdown(
-            width=120, value="9600", text_size=13, dense=True,
+            width=120, value="57600", text_size=13, dense=True,
             options=[
                 ft.DropdownOption("9600"),
                 ft.DropdownOption("19200"),
                 ft.DropdownOption("38400"),
+                ft.DropdownOption("57600"),
             ],
         )
 
@@ -710,10 +711,10 @@ class MotorApp:
         try:
             baud = int(self._baud_dropdown.value)
         except (ValueError, TypeError):
-            baud = 9600
-        if baud not in (9600, 19200, 38400):
-            baud = 9600
-            self._baud_dropdown.value = "9600"
+            baud = 57600
+        if baud not in (9600, 19200, 38400, 57600):
+            baud = 57600
+            self._baud_dropdown.value = "57600"
         self.motor_ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=True)
         ok = self.motor_ctrl.connect()
         if ok:
@@ -763,7 +764,7 @@ class MotorApp:
         except Exception:
             pass
 
-        for baud in (9600, 19200, 38400):
+        for baud in (57600, 9600, 19200, 38400):
             ctrl = MotorController(port=port, baudrate=baud, parity='N', rs485_mode=True)
             if not ctrl.connect():
                 continue
@@ -796,7 +797,7 @@ class MotorApp:
         try:
             baud = int(self._baud_dropdown.value)
         except (ValueError, TypeError):
-            baud = 9600
+            baud = 57600
 
         lines = [f"=== Diagnose {port} @ {baud} ==="]
 
@@ -1099,14 +1100,9 @@ class MotorApp:
     MAX_PPS = 500000
 
     def _speed_to_pps(self, val: float) -> int:
-        """사용자 입력 속도(mm/s, cm/s, m/s) → pps 변환 (최대 8000pps)"""
-        if self.speed_unit == "cm/s":
-            mm_per_sec = val * 10.0
-        elif self.speed_unit == "m/s":
-            mm_per_sec = val * 1000.0
-        else:
-            mm_per_sec = val
-        return min(self.MAX_PPS, max(0, int(mm_per_sec * PULSE_PER_MM)))
+        """사용자 입력 속도(mm/h) → PPS 변환. 메뉴얼 모드와 동일한 단위."""
+        mm_per_sec = val / 3600.0
+        return min(self.MAX_PPS, max(1, int(round(mm_per_sec * PULSE_PER_MM))))
 
     def _on_step_change(self, motor_idx, step_idx):
         self._update_distance(motor_idx, step_idx)
@@ -1126,14 +1122,10 @@ class MotorApp:
             if mt == 'linear':
                 pps = self._speed_to_pps(raw)
                 clamped = pps >= self.MAX_PPS
-                dist_mm = speed_pps_to_mm_per_sec(pps) * dur_h * 3600
+                # raw = mm/h, dur_h = hours → dist = raw * dur_h mm
+                dist_mm = raw * dur_h
                 warn = "⚠" if clamped else ""
-                if self.speed_unit == "m/s":
-                    slot['dist_text'].value = f"{warn}{dist_mm / 1000:.3f} m"
-                elif self.speed_unit == "cm/s":
-                    slot['dist_text'].value = f"{warn}{dist_mm / 10:.2f} cm"
-                else:
-                    slot['dist_text'].value = f"{warn}{dist_mm:.1f} mm"
+                slot['dist_text'].value = f"{warn}{dist_mm:.2f} mm"
             else:
                 # raw = RPM (스테이지 기준)
                 pps = min(self.MAX_PPS, max(0, int(raw * 360.0 / 60.0 / STEP_ANGLE)))
@@ -1146,11 +1138,7 @@ class MotorApp:
             slot['dist_text'].value = "-"
 
     def _cycle_speed_unit(self):
-        order = ["mm/s", "cm/s", "m/s"]
-        idx = order.index(self.speed_unit)
-        self.speed_unit = order[(idx + 1) % 3]
-        self._render_schedule()
-        self.page.update()
+        pass  # 스케줄 linear 단위는 mm/h 고정 (메뉴얼과 동일)
 
     def _make_dir_toggle(self, motor_idx, step_idx):
         """방향 아이콘 토글 버튼"""
@@ -1400,26 +1388,17 @@ class MotorApp:
         dir_opts = DIRECTION_OPTIONS[mt]
 
         if mt == 'linear':
-            speed_header = f"Speed ({self.speed_unit})"
+            speed_header = "Speed (mm/h)"
         else:
             speed_header = "Speed (rpm)"
         dist_header = "Distance" if mt == 'linear' else "Rotation"
 
-        unit_btn = ft.Container(
-            content=ft.Text(self.speed_unit, size=11, weight=ft.FontWeight.BOLD,
-                            color="#ffffff", text_align=ft.TextAlign.CENTER),
-            width=55, height=28, bgcolor="#607D8B", border_radius=4,
-            alignment=ft.Alignment(0, 0),
-            on_click=lambda e: self._cycle_speed_unit(),
-        )
-        self.schedule_content.controls.append(
-            ft.Row([ft.Text("Unit:", size=11), unit_btn], alignment=ft.MainAxisAlignment.CENTER, spacing=6))
         self.schedule_content.controls.append(ft.Container(height=4))
 
         for step in range(8):
             slot = self.steps[m][step]
             if not slot['speed']:
-                default_speed = "10" if mt == 'linear' else "90"
+                default_speed = "1" if mt == 'linear' else "1"
                 slot['speed'] = self._make_table_input(
                     default_speed, w=C_W, h=C_H,
                     on_change=lambda e, mi=m, si=step: self._on_step_change(mi, si))
@@ -1626,13 +1605,9 @@ class MotorApp:
         seconds = dur_h * 3600
         mt = MOTOR_TYPES[motor_idx]
         if mt == 'linear':
+            # spd = PPS, PPS → mm/s → mm
             dist_mm = speed_pps_to_mm_per_sec(int(spd)) * seconds
-            if self.speed_unit == "m/s":
-                return f"{arrow} {dist_mm / 1000:.3f}m"
-            elif self.speed_unit == "cm/s":
-                return f"{arrow} {dist_mm / 10:.2f}cm"
-            else:
-                return f"{arrow} {dist_mm:.1f}mm"
+            return f"{arrow} {dist_mm:.1f}mm"
         else:
             deg = speed_pps_to_deg_per_sec(int(spd)) * seconds
             if deg >= 360:
