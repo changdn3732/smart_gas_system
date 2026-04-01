@@ -1523,9 +1523,14 @@ class MotorApp:
             self._manual_dir_btns[mi] = dir_lbl_ctrl
 
             # Apply 버튼
+            _btn_style = ft.ButtonStyle(
+                padding=ft.padding.symmetric(horizontal=8, vertical=0),
+                text_style=ft.TextStyle(size=13, overflow=ft.TextOverflow.CLIP),
+                shape=ft.RoundedRectangleBorder(radius=6),
+            )
             apply_btn = ft.ElevatedButton(
                 "Apply", bgcolor="#1565C0", color="white",
-                width=65, height=36,
+                width=82, height=36, style=_btn_style,
                 on_click=lambda e, i=mi: self._apply_manual_speed(i),
             )
 
@@ -1534,7 +1539,7 @@ class MotorApp:
             btn_color = "#f44336" if is_active else "#4CAF50"
             ss_btn = ft.ElevatedButton(
                 btn_text, bgcolor=btn_color, color="white",
-                width=65, height=36,
+                width=82, height=36, style=_btn_style,
                 on_click=lambda e, i=mi: self._manual_toggle(i),
             )
             self._manual_startstop_btns[mi] = ss_btn
