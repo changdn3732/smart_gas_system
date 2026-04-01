@@ -1939,7 +1939,23 @@ class MotorApp:
             return
 
         total_sec = total_dur * 3600.0 + 1.0
-        start_time = time.monotonic()
+
+        # ── 첫 스텝 동시 기동 준비 ──────────────────────────────────────
+        # 속도 사전 기록(N writes) + 드라이버별 XY 비트 OR(최대 2 writes)로
+        # 4개 모터 기동 딜레이를 최소화합니다.
+        first_configs = []  # (motor_id, mapped_dir, spd)
+        for mi in range(4):
+            segs_mi = self._get_relative_segments(mi)
+            if segs_mi:
+                _dp, _spd, _dur, _d = segs_mi[0]
+                if _spd > 0:
+                    _motor_id = MOTOR_IDS[mi]
+                    first_configs.append((_motor_id, self._map_motor_direction(_motor_id, _d), _spd))
+
+        if self.motor_ctrl and self.motor_ctrl.connected and first_configs:
+            self.motor_ctrl.start_motors_simultaneous(first_configs)
+
+        start_time = time.monotonic()  # 동시 기동 직후를 t=0 기준으로
 
         async def run_motor_segments(motor_idx: int):
             """연속운전: 방향·속도·시간으로 세그먼트 실행"""
@@ -1948,20 +1964,20 @@ class MotorApp:
             for j, (delta_pulse, spd, dur_sec, d) in enumerate(segs):
                 if not self.schedule_running:
                     if self.motor_ctrl:
-                        self.motor_ctrl.stop_motor(motor_id, immediate=False)  # P0 0501/0502
+                        self.motor_ctrl.stop_motor(motor_id, immediate=False)
                     return
-                # 경과시간 기반 강제 정지: 계획시간 초과 시 세그먼트 시작하지 않음
                 if time.monotonic() - start_time >= total_sec:
                     if self.motor_ctrl:
-                        self.motor_ctrl.stop_motor(motor_id, immediate=False)  # P0 0501/0502
+                        self.motor_ctrl.stop_motor(motor_id, immediate=False)
                     return
                 if not self.motor_ctrl or not self.motor_ctrl.connected:
                     await asyncio.sleep(min(dur_sec, max(0, total_sec - (time.monotonic() - start_time))))
                     continue
                 try:
                     mapped = self._map_motor_direction(motor_id, d)
-                    self.motor_ctrl.start_motor(motor_id, mapped, spd)
-                    limit_hit = False
+                    # 첫 스텝(j==0)은 이미 동시 기동됨 → start_motor 스킵
+                    if j > 0:
+                        self.motor_ctrl.start_motor(motor_id, mapped, spd)
                     # 위치 추적용 delta_mm: 배율 제거한 실제 물리 이동거리
                     mt = MOTOR_TYPES[motor_idx]
                     pulse_mult = self.SCHEDULE_PULSE_MULT.get(mt, 1)

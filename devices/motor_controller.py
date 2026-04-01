@@ -166,7 +166,7 @@ class MotorStatus:
 
 
 class PMC2HSPDriver:
-    def __init__(self, slave_id: int = 1, port: str = '/dev/ttyS1', baudrate: int = 9600,
+    def __init__(self, slave_id: int = 1, port: str = '/dev/ttyS1', baudrate: int = 57600,
                  is_linear_stage: bool = False):
         self.slave_id = slave_id
         self.port = port
@@ -516,7 +516,7 @@ class MotorController:
         'lower_rotate': {'driver': 1, 'axis': MotorAxis.Y, 'name': '하부 회전',     'type': 'rotate'},
     }
 
-    def __init__(self, port: str = 'COM7', baudrate: int = 9600,
+    def __init__(self, port: str = 'COM7', baudrate: int = 57600,
                  parity: str = 'N', rs485_mode: bool = False):
         self.port = port
         self.baudrate = baudrate
@@ -713,6 +713,64 @@ class MotorController:
             self.motor_speeds[motor_id] = speed
             self.motor_directions[motor_id] = d
         return ok
+
+    def start_motors_simultaneous(self, motor_configs: list) -> bool:
+        """
+        여러 모터를 최소 딜레이로 동시 기동.
+
+        Phase 1: 속도 레지스터 전체 사전 기록  (N writes)
+        Phase 2: speed select 전체             (N writes)
+        Phase 3: 드라이버별 XY 비트 OR → 1 write/driver (최대 2 writes)
+
+        motor_configs: [(motor_id, direction_str, speed_pps), ...]
+        """
+        if not self.connected:
+            return False
+        dir_map = {
+            'plus': MotorDirection.PLUS, 'minus': MotorDirection.MINUS,
+            'up': MotorDirection.PLUS, 'down': MotorDirection.MINUS,
+            'cw': MotorDirection.CW, 'ccw': MotorDirection.CCW,
+        }
+        _fwd = {MotorDirection.PLUS, MotorDirection.CW}
+
+        prepared = []
+        for motor_id, dir_str, speed in motor_configs:
+            if speed <= 0:
+                continue
+            d = dir_map.get(dir_str.lower())
+            if not d:
+                continue
+            drv, axis = self._get_driver_axis(motor_id)
+            prepared.append((motor_id, drv, axis, d, speed))
+
+        # Phase 1: 속도 레지스터 전체 기록
+        for motor_id, drv, axis, d, speed in prepared:
+            drv.write_drive_speed1(axis, speed)
+
+        # Phase 2: speed select 전체
+        for motor_id, drv, axis, d, speed in prepared:
+            drv.select_speed(axis, 1)
+
+        # Phase 3: 드라이버별 XY 비트 합산 후 1 write 로 동시 기동
+        # X+: 0x20, X-: 0x10, Y+: 0x02, Y-: 0x01
+        drv_lo: dict = {}
+        drv_ref: dict = {}
+        for motor_id, drv, axis, d, speed in prepared:
+            key = id(drv)
+            if axis == MotorAxis.X:
+                bit = 0x20 if d in _fwd else 0x10
+            else:
+                bit = 0x02 if d in _fwd else 0x01
+            drv_lo[key] = drv_lo.get(key, 0) | bit
+            drv_ref[key] = drv
+            self.motor_speeds[motor_id] = speed
+            self.motor_directions[motor_id] = d
+
+        for key, lo in drv_lo.items():
+            drv_ref[key]._send_command(0x01, lo)
+            self.log(f"start_motors_simultaneous drv={drv_ref[key].slave_id} cmd=0x01{lo:02X}")
+
+        return True
 
     def stop_motor(self, motor_id: str, immediate: bool = False) -> bool:
         if not self.connected:
